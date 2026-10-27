@@ -1,17 +1,21 @@
 package com.example.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.AudioController
 import com.example.audio.AudioDspEngine
 import com.example.audio.LiveRecordingTelemetry
+import com.example.audio.MediaCodecExportEngine
 import com.example.data.AiVoicePreset
 import com.example.data.AppLanguage
+import com.example.data.AudioExportFormat
 import com.example.data.AudioSplitClip
 import com.example.data.AudioTrackEntity
 import com.example.data.ManualTimeRange
 import com.example.data.NoiseProfileEntity
+import com.example.data.OfflineVoiceCharacter
 import com.example.data.SilenceRemovalMode
 import com.example.data.StudioDatabase
 import com.example.data.StudioRepository
@@ -68,25 +72,37 @@ data class StudioUiState(
     val sampleWindowStartSec: Float = 0.0f,
     val sampleWindowEndSec: Float = 3.5f,
     val isProcessingDsp: Boolean = false,
-    val statusBannerMessageBn: String = "স্টুডিও প্রস্তুত — ৩২ সেকেন্ডের ডেমো ভয়েস+নয়েজ ট্র্যাক লোড করা হয়েছে",
-    val statusBannerMessageEn: String = "Studio Ready — 32s Demo Voice + Noise Track Loaded",
+    val statusBannerMessageBn: String = "স্টুডিও প্রস্তুত — ১০০% অফলাইন অডিও ও ভিডিও নয়েজ/সাইলেন্স স্টুডিও",
+    val statusBannerMessageEn: String = "Studio Ready — 100% Offline Audio & Video Noise/Silence Studio",
 
-    // Feature 4: Flexible Audio Splitter (Auto up to 100 + Manual '+' Ranges)
+    // Feature 4: Visual WAV Multi-Cut + Flexible Audio Splitter (Auto up to 100 + Manual '+' Ranges)
+    val visualCutStartSec: Float = 3.5f,
+    val visualCutEndSec: Float = 11.5f,
     val manualTimeRanges: List<ManualTimeRange> = listOf(
-        ManualTimeRange(id = 1L, startSecText = "1", endSecText = "12", label = "Clip 1 (Intro)"),
-        ManualTimeRange(id = 2L, startSecText = "12", endSecText = "22", label = "Clip 2 (Main)"),
-        ManualTimeRange(id = 3L, startSecText = "22", endSecText = "31", label = "Clip 3 (Outro)")
+        ManualTimeRange(id = 1L, startSecText = "1.0", endSecText = "10.0", label = "Clip 1 (Intro)"),
+        ManualTimeRange(id = 2L, startSecText = "10.0", endSecText = "20.0", label = "Clip 2 (Main)"),
+        ManualTimeRange(id = 3L, startSecText = "20.0", endSecText = "30.0", label = "Clip 3 (Outro)")
     ),
     val generatedSplitClips: List<AudioSplitClip> = emptyList(),
     val playingClipFilePath: String? = null,
 
-    // Feature 5: AI Speech Clarity & Sound Enhancement
+    // Feature 5: AI Speech Clarity, Unique Offline Voice Studio & Multi-Format Export (WAV/MP3/AAC + Video)
     val selectedAiPreset: AiVoicePreset = AiVoicePreset.CRYSTAL_PODCAST,
     val voiceBoostDb: Float = 3.5f,
     val autoNormalizeEnabled: Boolean = true,
     val targetPeakDb: Float = -1.0f,
     val customWarmthDb: Float = 3.5f,
     val customClarityDb: Float = 4.8f,
+
+    // Unique Offline AI Features: De-Breath/De-Click & Vocal Character / Speed
+    val deBreathAndClickCleanEnabled: Boolean = true,
+    val selectedVoiceCharacter: OfflineVoiceCharacter = OfflineVoiceCharacter.NATURAL,
+    val speechSpeedFactor: Float = 1.0f,
+
+    // Multi-Format Export (MP3, WAV, AAC) & Gallery State
+    val selectedExportFormat: AudioExportFormat = AudioExportFormat.MP3,
+    val selectedExportBitrateKbps: Int = 192,
+    val lastExportedPathDisplay: String = "",
 
     // Playback & Settings Guide Dialog state
     val isPlayingMainTrack: Boolean = false,
@@ -98,6 +114,7 @@ data class StudioUiState(
 }
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
+    private val appContext = application.applicationContext
     private val repository: StudioRepository
     private val audioController = AudioController(viewModelScope)
     private val studioFilesDir = File(application.filesDir, "sonicforge_audio").apply { mkdirs() }
@@ -172,7 +189,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     detectedSilenceCount = analysis.detectedSilenceRegionsCount,
                     estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
                     sampleWindowStartSec = 0.0f,
-                    sampleWindowEndSec = min(3.5f, analysis.durationSec)
+                    sampleWindowEndSec = min(3.5f, analysis.durationSec),
+                    visualCutStartSec = 3.6f,
+                    visualCutEndSec = min(13.0f, analysis.durationSec)
                 )
             }
         }
@@ -237,6 +256,139 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val e = endSec.coerceIn(s + 0.5f, maxDur)
         _uiState.update {
             it.copy(sampleWindowStartSec = s, sampleWindowEndSec = e)
+        }
+    }
+
+    /**
+     * Visual WAV Waveform Selection for Multi-Cut:
+     * Users can visually select/adjust start & end markers on the WAV waveform and click '+'
+     * to add that visual selection directly to the multi-cut list!
+     */
+    fun updateVisualCutSelection(startSec: Float, endSec: Float) {
+        val maxDur = _uiState.value.activeTrack?.durationSec ?: 32f
+        val s = startSec.coerceIn(0f, max(0f, maxDur - 0.4f))
+        val e = endSec.coerceIn(s + 0.4f, maxDur)
+        _uiState.update {
+            it.copy(visualCutStartSec = s, visualCutEndSec = e)
+        }
+    }
+
+    fun addVisualSelectionToCutRanges() {
+        val state = _uiState.value
+        val sText = "%.1f".format(state.visualCutStartSec)
+        val eText = "%.1f".format(state.visualCutEndSec)
+        val nextIdx = state.manualTimeRanges.size + 1
+        val newSlot = ManualTimeRange(
+            id = System.currentTimeMillis() + nextIdx,
+            startSecText = sText,
+            endSecText = eText,
+            label = "WAV Cut #$nextIdx"
+        )
+        val trackDur = state.activeTrack?.durationSec ?: 32f
+        val nextVisualStart = (state.visualCutEndSec).coerceIn(0f, max(0f, trackDur - 2f))
+        val nextVisualEnd = (nextVisualStart + 6f).coerceIn(nextVisualStart + 0.5f, trackDur)
+
+        _uiState.update {
+            it.copy(
+                manualTimeRanges = state.manualTimeRanges + newSlot,
+                visualCutStartSec = nextVisualStart,
+                visualCutEndSec = nextVisualEnd,
+                statusBannerMessageBn = "WAV ওয়েভফর্ম সিলেকশন ($sText সে. - $eText সে.) কাট লিস্টে যোগ হয়েছে!",
+                statusBannerMessageEn = "Added WAV Waveform Selection (${sText}s - ${eText}s) to Multi-Cut list!"
+            )
+        }
+    }
+
+    /**
+     * Import Audio or Video from Phone Gallery (100% Offline decoding via MediaExtractor + MediaCodec)
+     */
+    fun importMediaFromGalleryUri(uri: Uri, isVideo: Boolean) {
+        audioController.stopPlayback()
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                isPlayingMainTrack = false,
+                statusBannerMessageBn = if (isVideo) {
+                    "গ্যালারি থেকে ভিডিও ইনপুট ও অডিও ট্র্যাক এক্সট্রাক্ট হচ্ছে (অফলাইন)…"
+                } else {
+                    "গ্যালারি থেকে অডিও ফাইল ইনপুট ও WAV ওয়েভফর্ম তৈরি হচ্ছে…"
+                },
+                statusBannerMessageEn = if (isVideo) {
+                    "Importing Video from Gallery & extracting audio waveform offline…"
+                } else {
+                    "Importing Audio from Gallery & decoding WAV waveform offline…"
+                }
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val imported = MediaCodecExportEngine.importMediaUriToStudioWav(
+                context = appContext,
+                uri = uri,
+                studioDir = studioFilesDir,
+                isVideo = isVideo
+            )
+            val state = _uiState.value
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = imported.wavFile,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+
+            val prefix = if (isVideo) "[Video] " else "[Audio] "
+            val newTrack = AudioTrackEntity(
+                title = "$prefix${imported.displayName}",
+                filePath = imported.wavFile.absolutePath,
+                durationSec = analysis.durationSec,
+                sampleRate = analysis.sampleRate,
+                peakDb = analysis.peakDb,
+                rmsDb = analysis.rmsDb,
+                noiseFloorDb = analysis.noiseFloorDb,
+                isVideoTrack = isVideo,
+                sourceVideoPath = imported.sourceVideoFile?.absolutePath,
+                waveformCsv = analysis.waveformBins.joinToString(",") { "%.3f".format(it) },
+                silenceMaskCsv = analysis.silenceMaskBins.joinToString(",") { if (it) "1" else "0" }
+            )
+            val id = repository.saveTrack(newTrack)
+            val savedTrack = newTrack.copy(id = id)
+
+            // Also auto-learn noise profile from the quietest region of the imported file
+            val autoProfile = AudioDspEngine.captureNoiseProfileFromWavRange(
+                file = imported.wavFile,
+                startSec = 0f,
+                endSec = min(3.0f, analysis.durationSec),
+                profileName = "Auto Noise Print (${imported.displayName.take(14)})",
+                sourceDesc = "Extracted from imported media"
+            )
+            val profId = repository.saveNoiseProfile(autoProfile)
+            val savedProfile = autoProfile.copy(id = profId)
+
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    activeTrack = savedTrack,
+                    activeNoiseProfile = savedProfile,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
+                    sampleWindowStartSec = 0f,
+                    sampleWindowEndSec = min(3.0f, analysis.durationSec),
+                    visualCutStartSec = 0f,
+                    visualCutEndSec = min(8.0f, analysis.durationSec),
+                    generatedSplitClips = emptyList(),
+                    statusBannerMessageBn = if (isVideo) {
+                        "ভিডিও সফলভাবে ইনপুট হয়েছে (${"%.1f".format(analysis.durationSec)}s)! এখন নয়েজ/সাইলেন্স রিমুভ ও এডিট করুন।"
+                    } else {
+                        "গ্যালারি অডিও ইনপুট সম্পন্ন (${"%.1f".format(analysis.durationSec)}s)! এখন কাট, নয়েজ রিমুভ বা এক্সপোর্ট করুন।"
+                    },
+                    statusBannerMessageEn = if (isVideo) {
+                        "Video imported (${"%.1f".format(analysis.durationSec)}s)! Ready for offline Noise & Silence removal."
+                    } else {
+                        "Gallery Audio imported (${"%.1f".format(analysis.durationSec)}s)! Ready to cut, clean & export."
+                    }
+                )
+            }
         }
     }
 
@@ -417,6 +569,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
                     sampleWindowStartSec = 0f,
                     sampleWindowEndSec = min(3.5f, analysis.durationSec),
+                    visualCutStartSec = 0f,
+                    visualCutEndSec = min(6.0f, analysis.durationSec),
                     statusBannerMessageBn = "রেকর্ডিং সেভ হয়েছে! অটো-স্কিপড সাইলেন্স: ${"%.1f".format(skippedSec)}s",
                     statusBannerMessageEn = "Recording Saved! Auto-skipped silence: ${"%.1f".format(skippedSec)}s"
                 )
@@ -424,14 +578,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun generateFreshDemoTrack() {
+    fun generateFreshDemoTrack(isVideoDemo: Boolean = false) {
         audioController.stopPlayback()
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     isProcessingDsp = true,
-                    statusBannerMessageBn = "নতুন ৩২ সেকেন্ডের স্টুডিও ডেমো ট্র্যাক তৈরি হচ্ছে…",
-                    statusBannerMessageEn = "Generating fresh 32s studio demo track…"
+                    statusBannerMessageBn = if (isVideoDemo) {
+                        "ডেমো ভিডিও + ফ্যান নয়েজ ও সাইলেন্স ট্র্যাক তৈরি হচ্ছে…"
+                    } else {
+                        "নতুন ৩২ সেকেন্ডের স্টুডিও ডেমো ট্র্যাক তৈরি হচ্ছে…"
+                    },
+                    statusBannerMessageEn = if (isVideoDemo) {
+                        "Generating Demo Video + Fan Noise & Silence track…"
+                    } else {
+                        "Generating fresh 32s studio demo track…"
+                    }
                 )
             }
             val demoFile = File(studioFilesDir, "demo_podcast_${System.currentTimeMillis()}.wav")
@@ -443,12 +605,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 minSilenceDurationSec = state.silenceDurationLimitSec
             )
             val entity = AudioTrackEntity(
-                title = "Demo Voice + Fan Noise (32s)",
+                title = if (isVideoDemo) "[Video] Studio Lecture + Fan Noise (32s)" else "Demo Voice + Fan Noise (32s)",
                 filePath = demoFile.absolutePath,
                 durationSec = analysis.durationSec,
                 peakDb = analysis.peakDb,
                 rmsDb = analysis.rmsDb,
-                noiseFloorDb = analysis.noiseFloorDb
+                noiseFloorDb = analysis.noiseFloorDb,
+                isVideoTrack = isVideoDemo
             )
             val id = repository.saveTrack(entity)
             val saved = entity.copy(id = id)
@@ -463,9 +626,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
                     sampleWindowStartSec = 0f,
                     sampleWindowEndSec = 3.5f,
+                    visualCutStartSec = 3.6f,
+                    visualCutEndSec = 12.0f,
                     generatedSplitClips = emptyList(),
-                    statusBannerMessageBn = "৩২ সেকেন্ডের ডেমো ট্র্যাক প্রস্তুত (৬টি ভয়েস ফ্রেজ + ৫টি সাইলেন্ট গ্যাপ + ফ্যান নয়েজ)!",
-                    statusBannerMessageEn = "32s Demo Track Ready (6 voice phrases + 5 silent gaps + fan noise)!"
+                    statusBannerMessageBn = if (isVideoDemo) {
+                        "ডেমো ভিডিও ট্র্যাক লোড হয়েছে! এখন ভিডিওর নয়েজ ও সাইলেন্স রিমুভ করে গ্যালারিতে সেভ করতে পারবেন।"
+                    } else {
+                        "৩২ সেকেন্ডের ডেমো ট্র্যাক প্রস্তুত (৬টি ভয়েস ফ্রেজ + ৫টি সাইলেন্ট গ্যাপ + ফ্যান নয়েজ)!"
+                    },
+                    statusBannerMessageEn = if (isVideoDemo) {
+                        "Demo Video Track Ready! You can now remove video noise/silence & export to Gallery."
+                    } else {
+                        "32s Demo Track Ready (6 voice phrases + 5 silent gaps + fan noise)!"
+                    }
                 )
             }
         }
@@ -493,6 +666,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     playingClipFilePath = null,
                     sampleWindowStartSec = 0f,
                     sampleWindowEndSec = min(3.5f, analysis.durationSec),
+                    visualCutStartSec = 0f,
+                    visualCutEndSec = min(8.0f, analysis.durationSec),
                     statusBannerMessageBn = "ট্র্যাক লোড হয়েছে: ${track.title}",
                     statusBannerMessageEn = "Loaded Track: ${track.title}"
                 )
@@ -531,7 +706,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Feature 3B: One-Click Sample-Based Noise Removal across the entire audio file
+     * Feature 3B: One-Click Sample-Based Noise Removal across the entire audio/video file
      */
     fun applyOneClickNoiseRemoval() {
         val track = _uiState.value.activeTrack ?: return
@@ -544,7 +719,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 isProcessingDsp = true,
                 isPlayingMainTrack = false,
-                statusBannerMessageBn = "স্মার্ট নয়েজ ফিল্টার দিয়ে পুরো অডিও থেকে নয়েজ রিমুভ হচ্ছে…",
+                statusBannerMessageBn = "স্মার্ট নয়েজ ফিল্টার দিয়ে পুরো ট্র্যাক থেকে নয়েজ রিমুভ হচ্ছে…",
                 statusBannerMessageEn = "Removing background noise across entire track with Smart Filter…"
             )
         }
@@ -643,6 +818,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
                     sampleWindowStartSec = 0f,
                     sampleWindowEndSec = min(3.0f, analysis.durationSec),
+                    visualCutStartSec = 0f,
+                    visualCutEndSec = min(6.0f, analysis.durationSec),
                     statusBannerMessageBn = "সাইলেন্স রিমুভ সম্পন্ন! মোট ${result.removedSegmentsCount}টি অংশ (${"%.1f".format(result.removedSilenceSec)} সেকেন্ড) কেটে বাদ দেওয়া হয়েছে।",
                     statusBannerMessageEn = "Silence Removed! Cut ${result.removedSegmentsCount} segments (${"%.1f".format(result.removedSilenceSec)}s removed)."
                 )
@@ -737,8 +914,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update {
             it.copy(
                 isProcessingDsp = true,
-                statusBannerMessageBn = "ম্যানুয়াল টাইম রেঞ্জ অনুযায়ী ${ranges.size}টি ক্লিপ তৈরি হচ্ছে…",
-                statusBannerMessageEn = "Splitting audio into ${ranges.size} custom time range clips…"
+                statusBannerMessageBn = "WAV ভিউ ও টাইম রেঞ্জ অনুযায়ী ${ranges.size}টি ক্লিপ কাট করা হচ্ছে…",
+                statusBannerMessageEn = "Cutting audio into ${ranges.size} clips from WAV ranges…"
             )
         }
 
@@ -753,15 +930,192 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     isProcessingDsp = false,
                     generatedSplitClips = clips,
-                    statusBannerMessageBn = "ম্যানুয়াল টাইম রেঞ্জ অনুযায়ী ${clips.size}টি অডিও টুকরো প্রস্তুত!",
-                    statusBannerMessageEn = "Created ${clips.size} audio clips from custom time ranges!"
+                    statusBannerMessageBn = "${clips.size}টি অডিও টুকরো প্রস্তুত! এখন 'সবগুলো গ্যালারিতে সেভ করুন' বাটনে চাপুন।",
+                    statusBannerMessageEn = "${clips.size} cut clips ready! Tap 'Save All Clips to Gallery' to export."
                 )
             }
         }
     }
 
     /**
-     * Feature 5: AI Speech Clarity, Voice Booster & Auto-Normalization
+     * Multi-Format Export (MP3, WAV, AAC) & Batch Gallery Saving
+     */
+    fun selectExportFormat(format: AudioExportFormat) {
+        _uiState.update { it.copy(selectedExportFormat = format) }
+    }
+
+    fun selectExportBitrate(kbps: Int) {
+        _uiState.update { it.copy(selectedExportBitrateKbps = kbps) }
+    }
+
+    fun exportActiveTrackToGallery() {
+        val track = _uiState.value.activeTrack ?: return
+        val inFile = File(track.filePath)
+        if (!inFile.exists()) return
+        val state = _uiState.value
+
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                statusBannerMessageBn = "${state.selectedExportFormat.label} ফরম্যাটে গ্যালারিতে এক্সপোর্ট হচ্ছে…",
+                statusBannerMessageEn = "Exporting track as ${state.selectedExportFormat.label} to Gallery…"
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val summary = MediaCodecExportEngine.exportAudioFileToGallery(
+                context = appContext,
+                sourceWavFile = inFile,
+                baseTitle = track.title,
+                format = state.selectedExportFormat,
+                bitrateKbps = state.selectedExportBitrateKbps
+            )
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    lastExportedPathDisplay = summary.savedLocationDisplay,
+                    statusBannerMessageBn = "গ্যালারিতে সেভ সম্পন্ন! (${summary.savedLocationDisplay})",
+                    statusBannerMessageEn = "Saved to Gallery! (${summary.savedLocationDisplay})"
+                )
+            }
+        }
+    }
+
+    fun exportSingleClipToGallery(clip: AudioSplitClip) {
+        val file = File(clip.filePath)
+        if (!file.exists()) return
+        val state = _uiState.value
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val summary = MediaCodecExportEngine.exportAudioFileToGallery(
+                context = appContext,
+                sourceWavFile = file,
+                baseTitle = clip.label,
+                format = state.selectedExportFormat,
+                bitrateKbps = state.selectedExportBitrateKbps
+            )
+            _uiState.update {
+                it.copy(
+                    lastExportedPathDisplay = summary.savedLocationDisplay,
+                    statusBannerMessageBn = "ক্লিপ #${clip.index} গ্যালারিতে সেভ হয়েছে (${summary.savedLocationDisplay})",
+                    statusBannerMessageEn = "Clip #${clip.index} saved to Gallery (${summary.savedLocationDisplay})"
+                )
+            }
+        }
+    }
+
+    fun batchExportAllSplitClipsToGallery() {
+        val clips = _uiState.value.generatedSplitClips
+        if (clips.isEmpty()) return
+        val state = _uiState.value
+
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                statusBannerMessageBn = "কাট করা ${clips.size}টি ক্লিপ ${state.selectedExportFormat.extension.uppercase()} ফরম্যাটে গ্যালারিতে সেভ হচ্ছে…",
+                statusBannerMessageEn = "Saving all ${clips.size} cut clips as ${state.selectedExportFormat.extension.uppercase()} to Gallery…"
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val summary = MediaCodecExportEngine.batchExportSplitClipsToGallery(
+                context = appContext,
+                clips = clips,
+                format = state.selectedExportFormat,
+                bitrateKbps = state.selectedExportBitrateKbps
+            )
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    lastExportedPathDisplay = summary.savedLocationDisplay,
+                    statusBannerMessageBn = "অভিনন্দন! সব (${summary.exportedCount}টি) অডিও ক্লিপ ফোনের গ্যালারিতে সেভ হয়েছে: ${summary.savedLocationDisplay}",
+                    statusBannerMessageEn = "Saved all ${summary.exportedCount} cut audio clips to Gallery: ${summary.savedLocationDisplay}"
+                )
+            }
+        }
+    }
+
+    /**
+     * Video Noise & Silence Removal + Video Gallery Export (.mp4)
+     */
+    fun cleanAndExportVideoToGallery() {
+        val track = _uiState.value.activeTrack ?: return
+        val inFile = File(track.filePath)
+        if (!inFile.exists()) return
+        val state = _uiState.value
+
+        audioController.stopPlayback()
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                statusBannerMessageBn = "ভিডিওর নয়েজ ও সাইলেন্স ক্লিন করে গ্যালারিতে MP4 সেভ হচ্ছে (অফলাইন)…",
+                statusBannerMessageEn = "Cleaning Video Noise & Silence and saving MP4 to Gallery (Offline)…"
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            var processedWav = inFile
+            if (state.activeNoiseProfile != null) {
+                val denoisedFile = File(studioFilesDir, "vid_denoised_${System.currentTimeMillis()}.wav")
+                processedWav = AudioDspEngine.applySmartNoiseFilter(
+                    inputFile = processedWav,
+                    outputFile = denoisedFile,
+                    noiseProfile = state.activeNoiseProfile,
+                    reductionStrength = state.noiseReductionStrength
+                )
+            }
+            val masteredWav = File(studioFilesDir, "vid_mastered_${System.currentTimeMillis()}.wav")
+            processedWav = AudioDspEngine.applyAiVoiceMastering(
+                inputFile = processedWav,
+                outputFile = masteredWav,
+                preset = state.selectedAiPreset,
+                voiceBoostDb = state.voiceBoostDb,
+                autoNormalizeEnabled = true,
+                targetPeakDb = -1.0f,
+                warmthBoostDb = state.customWarmthDb,
+                clarityBoostDb = state.customClarityDb
+            )
+
+            val srcVideo = track.sourceVideoPath?.let { File(it) }
+            val savedVideoPath = MediaCodecExportEngine.exportCleanedVideoToGallery(
+                context = appContext,
+                cleanedWavFile = processedWav,
+                sourceVideoFile = srcVideo
+            )
+
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = processedWav,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+            val updatedTrack = track.copy(
+                title = "${track.title.substringBefore(" [")} [Clean Video]",
+                filePath = processedWav.absolutePath,
+                durationSec = analysis.durationSec,
+                peakDb = analysis.peakDb,
+                rmsDb = analysis.rmsDb,
+                noiseFloorDb = analysis.noiseFloorDb,
+                isNoiseFiltered = true,
+                isNormalized = true
+            )
+            repository.updateTrack(updatedTrack)
+
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    activeTrack = updatedTrack,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    lastExportedPathDisplay = savedVideoPath,
+                    statusBannerMessageBn = "ভিডিও নয়েজ ক্লিন ও গ্যালারিতে সেভ সম্পন্ন! ($savedVideoPath)",
+                    statusBannerMessageEn = "Video Noise Cleaned & Saved to Gallery! ($savedVideoPath)"
+                )
+            }
+        }
+    }
+
+    /**
+     * Feature 5 & Unique Offline Voice Studio Controls
      */
     fun selectAiVoicePreset(preset: AiVoicePreset) {
         _uiState.update {
@@ -795,6 +1149,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun toggleDeBreathAndClickClean(enabled: Boolean) {
+        _uiState.update { it.copy(deBreathAndClickCleanEnabled = enabled) }
+    }
+
+    fun selectOfflineVoiceCharacter(character: OfflineVoiceCharacter) {
+        _uiState.update { it.copy(selectedVoiceCharacter = character) }
+    }
+
+    fun updateSpeechSpeedFactor(speed: Float) {
+        _uiState.update { it.copy(speechSpeedFactor = speed.coerceIn(0.75f, 1.40f)) }
+    }
+
     fun applyStudioEffectsAndMastering() {
         val track = _uiState.value.activeTrack ?: return
         val inFile = File(track.filePath)
@@ -806,8 +1172,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 isProcessingDsp = true,
                 isPlayingMainTrack = false,
-                statusBannerMessageBn = "এআই ভয়েস এনহ্যান্সার ও অটো-নর্মালাইজেশন প্রয়োগ হচ্ছে…",
-                statusBannerMessageEn = "Applying AI Studio Voice Enhancer & Auto-Normalization…"
+                statusBannerMessageBn = "অফলাইন এআই ভয়েস এনহ্যান্সার, ডি-ব্রেথ ও অটো-নর্মালাইজেশন প্রয়োগ হচ্ছে…",
+                statusBannerMessageEn = "Applying Offline AI Voice Enhancer, De-Breath & Auto-Normalization…"
             )
         }
 
@@ -816,10 +1182,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             if (state.smartNoiseFilterEnabled && state.activeNoiseProfile != null && !track.isNoiseFiltered) {
                 val denoisedTemp = File(studioFilesDir, "pre_master_clean_${System.currentTimeMillis()}.wav")
                 workingFile = AudioDspEngine.applySmartNoiseFilter(
-                    inputFile = inFile,
+                    inputFile = workingFile,
                     outputFile = denoisedTemp,
                     noiseProfile = state.activeNoiseProfile,
                     reductionStrength = state.noiseReductionStrength
+                )
+            }
+
+            if (state.deBreathAndClickCleanEnabled ||
+                state.selectedVoiceCharacter != OfflineVoiceCharacter.NATURAL ||
+                kotlin.math.abs(state.speechSpeedFactor - 1.0f) > 0.02f
+            ) {
+                val voiceTransformTemp = File(studioFilesDir, "voice_transform_${System.currentTimeMillis()}.wav")
+                workingFile = AudioDspEngine.applyOfflineProVoiceTransform(
+                    inputFile = workingFile,
+                    outputFile = voiceTransformTemp,
+                    deBreathAndClickClean = state.deBreathAndClickCleanEnabled,
+                    pitchFactor = state.selectedVoiceCharacter.pitchFactor,
+                    speedFactor = state.speechSpeedFactor
                 )
             }
 

@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.CheckCircle
@@ -39,12 +41,14 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -60,6 +64,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -69,6 +74,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.AppLanguage
 import com.example.data.AudioTrackEntity
+import com.example.data.ManualTimeRange
 import com.example.data.tr
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.BorderSubtle
@@ -84,16 +90,11 @@ import com.example.ui.theme.VioletAi
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 
 /**
  * Custom Canvas-based Real-Time Audio Waveform Visualizer for Recording & Live Input Monitoring.
- * Renders:
- * 1. Studio oscilloscope time/dB grid lines
- * 2. Dynamic Silence-Skip dB Threshold gate reference lines (upper & lower)
- * 3. Mirrored real-time vertical amplitude bars with peak caps
- * 4. Smooth Bezier spline envelope wave overlay
- * 5. Live recording head indicator & telemetry badges
  */
 @Composable
 fun RealTimeRecordingWaveformCanvas(
@@ -148,7 +149,6 @@ fun RealTimeRecordingWaveformCanvas(
             val h = size.height
             val midY = h / 2f
 
-            // 1. Subtle Studio Oscilloscope Grid Lines
             val vSteps = 6
             for (g in 1 until vSteps) {
                 val gx = (w / vSteps) * g
@@ -166,7 +166,6 @@ fun RealTimeRecordingWaveformCanvas(
                 strokeWidth = 1.dp.toPx()
             )
 
-            // 2. Dynamic dB Silence Threshold Gate Lines (Upper & Lower mirrored)
             val gateOffset = thresholdNorm * (midY * 0.88f)
             val dashEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f)
             drawLine(
@@ -184,7 +183,6 @@ fun RealTimeRecordingWaveformCanvas(
                 pathEffect = dashEffect
             )
 
-            // 3. Prepare 48 real-time amplitude bars (or animated studio standby wave when idle)
             val barCount = 48
             val slotW = w / barCount
             val barW = max(2.5f, slotW * 0.62f)
@@ -195,10 +193,8 @@ fun RealTimeRecordingWaveformCanvas(
                     val idx = (i * liveAmps.size / barCount).coerceIn(0, liveAmps.lastIndex)
                     liveAmps[idx]
                 } else {
-                    // Gentle standby studio monitor wave
-                    val env = 0.14f + 0.18f * abs(sin(phaseShift + i * 0.24f)) *
+                    0.14f + 0.18f * abs(sin(phaseShift + i * 0.24f)) *
                         (0.6f + 0.4f * sin(i * 0.13f))
-                    env
                 }
 
                 val clampedAmp = rawAmp.coerceIn(0.04f, 0.98f)
@@ -228,7 +224,6 @@ fun RealTimeRecordingWaveformCanvas(
                     cornerRadius = CornerRadius(barW / 2f, barW / 2f)
                 )
 
-                // Build smooth spline path along upper waveform peaks
                 val peakY = midY - halfBarH
                 if (i == 0) {
                     upperWavePath.moveTo(centerX, peakY)
@@ -239,14 +234,12 @@ fun RealTimeRecordingWaveformCanvas(
                 }
             }
 
-            // 4. Draw glowing envelope spline stroke over the bars
             drawPath(
                 path = upperWavePath,
                 color = if (isRecording && !isSkippingSilence) EmeraldNeon.copy(alpha = 0.55f) else ElectricCyan.copy(alpha = 0.4f),
                 style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
             )
 
-            // 5. Right-edge Live Record Playhead Line
             if (isRecording) {
                 val headX = w - 4.dp.toPx()
                 drawLine(
@@ -259,7 +252,6 @@ fun RealTimeRecordingWaveformCanvas(
             }
         }
 
-        // Top-left Live Oscilloscope Label
         Row(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -305,7 +297,6 @@ fun RealTimeRecordingWaveformCanvas(
             )
         }
 
-        // Bottom-right Gate Threshold Legend
         Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -335,6 +326,8 @@ fun ActiveTrackTransportBar(
     playbackSec: Float,
     statusMessage: String,
     onTogglePlay: () -> Unit,
+    onImportAudio: () -> Unit,
+    onImportVideo: () -> Unit,
     onGenerateDemo: () -> Unit
 ) {
     Surface(
@@ -374,37 +367,115 @@ fun ActiveTrackTransportBar(
                             tint = ObsidianBg
                         )
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Column {
-                        Text(
-                            text = track?.title ?: tr(language, "লোড হচ্ছে…", "Loading track…"),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextPrimary,
-                            maxLines = 1
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (track?.isVideoTrack == true) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(VioletAi.copy(alpha = 0.22f))
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                                ) {
+                                    Text(
+                                        text = "VIDEO",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = VioletAi
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+                            Text(
+                                text = track?.title ?: tr(language, "লোড হচ্ছে…", "Loading track…"),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TextPrimary,
+                                maxLines = 1
+                            )
+                        }
                         val totalDur = track?.durationSec ?: 0f
                         Text(
                             text = "${"%.1f".format(playbackSec)}s / ${"%.1f".format(totalDur)}s • Peak ${"%.1f".format(track?.peakDb ?: -6f)} dB • Floor ${"%.1f".format(track?.noiseFloorDb ?: -42f)} dB",
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelSmall,
                             color = ElectricCyan
                         )
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Quick Import Bar: Gallery Audio | Gallery Video | Demo Track
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = onImportAudio,
+                    border = ButtonDefaults.outlinedButtonBorder(true).copy(
+                        brush = SolidColor(ElectricCyan.copy(alpha = 0.7f))
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .testTag("transport_import_audio_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.AudioFile,
+                        contentDescription = null,
+                        tint = ElectricCyan,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = tr(language, "গ্যালারি অডিও", "Import Audio"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ElectricCyan,
+                        maxLines = 1
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onImportVideo,
+                    border = ButtonDefaults.outlinedButtonBorder(true).copy(
+                        brush = SolidColor(VioletAi.copy(alpha = 0.7f))
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .testTag("transport_import_video_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.VideoFile,
+                        contentDescription = null,
+                        tint = VioletAi,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = tr(language, "ভিডিও ইনপুট", "Import Video"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = VioletAi,
+                        maxLines = 1
+                    )
+                }
 
                 TextButton(
                     onClick = onGenerateDemo,
-                    modifier = Modifier.testTag("reset_demo_track_button")
+                    modifier = Modifier
+                        .height(38.dp)
+                        .testTag("reset_demo_track_button")
                 ) {
                     Icon(
                         imageVector = Icons.Filled.GraphicEq,
                         contentDescription = "Reset studio demo track",
                         tint = AmberGold,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
                     Text(
-                        text = tr(language, "ডেমো ট্র্যাক", "Demo Track"),
-                        style = MaterialTheme.typography.labelMedium,
+                        text = tr(language, "ডেমো", "Demo"),
+                        style = MaterialTheme.typography.labelSmall,
                         color = AmberGold
                     )
                 }
@@ -437,7 +508,10 @@ fun ActiveTrackTransportBar(
 }
 
 /**
- * Interactive Studio Waveform Visualizer for Editor/Trimmer screen
+ * Interactive Studio WAV Waveform Visualizer with:
+ * - Voice & Silence region visualization
+ * - Noise Sample selection window (Violet)
+ * - Visual WAV Multi-Cut range selector + saved Multi-Cut overlays (Emerald)
  */
 @Composable
 fun InteractiveWaveformCanvas(
@@ -448,8 +522,13 @@ fun InteractiveWaveformCanvas(
     sampleStartSec: Float,
     sampleEndSec: Float,
     showSampleWindow: Boolean,
+    visualCutStartSec: Float = 0f,
+    visualCutEndSec: Float = 0f,
+    showVisualCutOverlay: Boolean = false,
+    savedCutRanges: List<ManualTimeRange> = emptyList(),
     language: AppLanguage = AppLanguage.BN,
     onSelectTimeSec: ((Float) -> Unit)? = null,
+    onDragVisualRange: ((Float, Float) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val safeDur = max(1f, durationSec)
@@ -457,7 +536,7 @@ fun InteractiveWaveformCanvas(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(148.dp)
+            .height(158.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(
                 Brush.verticalGradient(
@@ -470,6 +549,25 @@ fun InteractiveWaveformCanvas(
                     detectTapGestures { offset ->
                         val ratio = (offset.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
                         onSelectTimeSec(ratio * safeDur)
+                    }
+                }
+            }
+            .pointerInput(safeDur, onDragVisualRange, visualCutStartSec, visualCutEndSec) {
+                if (onDragVisualRange != null) {
+                    detectHorizontalDragGestures { change, dragAmount ->
+                        change.consume()
+                        val w = size.width.coerceAtLeast(1).toFloat()
+                        val touchSec = (change.position.x / w).coerceIn(0f, 1f) * safeDur
+                        val deltaSec = (dragAmount / w) * safeDur
+                        val distToStart = abs(touchSec - visualCutStartSec)
+                        val distToEnd = abs(touchSec - visualCutEndSec)
+                        if (distToStart <= distToEnd) {
+                            val newStart = (visualCutStartSec + deltaSec).coerceIn(0f, max(0f, visualCutEndSec - 0.5f))
+                            onDragVisualRange(newStart, visualCutEndSec)
+                        } else {
+                            val newEnd = (visualCutEndSec + deltaSec).coerceIn(min(safeDur, visualCutStartSec + 0.5f), safeDur)
+                            onDragVisualRange(visualCutStartSec, newEnd)
+                        }
                     }
                 }
             }
@@ -501,12 +599,38 @@ fun InteractiveWaveformCanvas(
                 pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
             )
 
+            // Draw Saved Multi-Cut Ranges on the WAV view
+            if (savedCutRanges.isNotEmpty() && durationSec > 0f) {
+                savedCutRanges.forEach { slot ->
+                    val sSec = slot.startSecText.toFloatOrNull() ?: return@forEach
+                    val eSec = slot.endSecText.toFloatOrNull() ?: return@forEach
+                    val sx = (sSec / safeDur).coerceIn(0f, 1f) * w
+                    val ex = (eSec / safeDur).coerceIn(0f, 1f) * w
+                    if (ex > sx) {
+                        drawRoundRect(
+                            color = ElectricCyan.copy(alpha = 0.09f),
+                            topLeft = Offset(sx, 6f),
+                            size = Size(ex - sx, h - 12f),
+                            cornerRadius = CornerRadius(6f, 6f)
+                        )
+                        drawLine(
+                            color = ElectricCyan.copy(alpha = 0.45f),
+                            start = Offset(sx, 4f),
+                            end = Offset(sx, h - 4f),
+                            strokeWidth = 1.2.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f))
+                        )
+                    }
+                }
+            }
+
+            // Draw Noise Sample Selection Box if enabled
             if (showSampleWindow && durationSec > 0f) {
                 val startX = (sampleStartSec / safeDur).coerceIn(0f, 1f) * w
                 val endX = (sampleEndSec / safeDur).coerceIn(0f, 1f) * w
                 val boxW = max(6f, endX - startX)
                 drawRoundRect(
-                    color = VioletAi.copy(alpha = 0.18f),
+                    color = VioletAi.copy(alpha = 0.16f),
                     topLeft = Offset(startX, 0f),
                     size = Size(boxW, h),
                     cornerRadius = CornerRadius(8f, 8f)
@@ -522,6 +646,42 @@ fun InteractiveWaveformCanvas(
                     start = Offset(endX, 0f),
                     end = Offset(endX, h),
                     strokeWidth = 2.dp.toPx()
+                )
+            }
+
+            // Draw Active Visual WAV Multi-Cut Handle Box (Emerald Green)
+            if (showVisualCutOverlay && durationSec > 0f) {
+                val cutStartX = (visualCutStartSec / safeDur).coerceIn(0f, 1f) * w
+                val cutEndX = (visualCutEndSec / safeDur).coerceIn(0f, 1f) * w
+                val cutW = max(8f, cutEndX - cutStartX)
+                drawRoundRect(
+                    color = EmeraldNeon.copy(alpha = 0.20f),
+                    topLeft = Offset(cutStartX, 2f),
+                    size = Size(cutW, h - 4f),
+                    cornerRadius = CornerRadius(8f, 8f)
+                )
+                // Left & Right Visual Cut Handles
+                drawLine(
+                    color = EmeraldNeon,
+                    start = Offset(cutStartX, 0f),
+                    end = Offset(cutStartX, h),
+                    strokeWidth = 3.dp.toPx()
+                )
+                drawCircle(
+                    color = EmeraldNeon,
+                    radius = 6.dp.toPx(),
+                    center = Offset(cutStartX, 10.dp.toPx())
+                )
+                drawLine(
+                    color = EmeraldNeon,
+                    start = Offset(cutEndX, 0f),
+                    end = Offset(cutEndX, h),
+                    strokeWidth = 3.dp.toPx()
+                )
+                drawCircle(
+                    color = EmeraldNeon,
+                    radius = 6.dp.toPx(),
+                    center = Offset(cutEndX, h - 10.dp.toPx())
                 )
             }
 
@@ -572,10 +732,13 @@ fun InteractiveWaveformCanvas(
                 .background(ObsidianBg.copy(alpha = 0.85f))
                 .padding(horizontal = 8.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             LegendDot(color = ElectricCyan, label = tr(language, "ভয়েস", "Voice"))
             LegendDot(color = AmberGold, label = tr(language, "সাইলেন্স", "Silence"))
+            if (showVisualCutOverlay) {
+                LegendDot(color = EmeraldNeon, label = tr(language, "WAV কাট সিলেকশন", "WAV Cut Range"))
+            }
             if (showSampleWindow) {
                 LegendDot(color = VioletAi, label = tr(language, "নয়েজ স্যাম্পল", "Noise Sample"))
             }
@@ -694,7 +857,7 @@ fun SettingsAndFeatureGuideDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 430.dp)
+                    .heightIn(max = 440.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -751,62 +914,62 @@ fun SettingsAndFeatureGuideDialog(
                 }
 
                 GuideSectionItem(
-                    icon = Icons.Filled.Fingerprint,
-                    accent = VioletAi,
+                    icon = Icons.Filled.AudioFile,
+                    accent = ElectricCyan,
                     title = tr(
                         language,
-                        "১. নয়েজ প্রোফাইল ও স্মার্ট রেকর্ডিং",
-                        "1. Noise Profile & Smart Recording"
+                        "১. গ্যালারি থেকে অডিও ও ভিডিও ইনপুট (অফলাইন)",
+                        "1. Gallery Audio & Video Import (100% Offline)"
                     ),
                     desc = tr(
                         language,
-                        "• Recorder ট্যাবে গিয়ে ৩-৫ সেকেন্ড সিলেক্ট করে 'নয়েজ প্রিন্ট ক্যাপচার' বাটন চাপুন।\n• 'স্মার্ট নয়েজ ফিল্টার' চালু রাখলে মূল কণ্ঠের একুরেসি ১০০% রেখে ফ্যান/এসি শব্দ মুছে যাবে।\n• 'সাইলেন্স স্কিপ' স্লাইডারে সেকেন্ড (১-৩ সে.) ও dB সেট করে রেকর্ড করলে চুপ থাকা অংশ অটো-পজ হবে।",
-                        "• In the Recorder tab, choose 3–5s and tap 'Capture Noise Print' to learn room fan/AC noise.\n• Enable 'Smart Noise Filter' for 100% voice accuracy noise removal.\n• Set Silence Skip seconds (1–3s) & dB threshold to auto-pause during quiet gaps."
+                        "• উপরের বারে থাকা 'গ্যালারি অডিও' বা 'ভিডিও ইনপুট' বাটনে ট্যাপ করে ফোনের যেকোনো অডিও (MP3/WAV/AAC) বা ভিডিও (MP4) ইনপুট করুন।\n• ভিডিও ইনপুট করলে তার ভেতরের ফ্যান/এসি নয়েজ ও সাইলেন্স ক্লিন করে আবার MP4 আকারে গ্যালারিতে সেভ করা যাবে।",
+                        "• Tap 'Import Audio' or 'Import Video' in the top bar to load any audio or video from your phone.\n• Imported videos can be denoised, silence-trimmed, and saved back to Gallery as clean MP4."
                     )
                 )
 
                 GuideSectionItem(
-                    icon = Icons.Filled.ContentCut,
-                    accent = AmberGold,
+                    icon = Icons.Filled.Fingerprint,
+                    accent = VioletAi,
                     title = tr(
                         language,
-                        "২. ডুয়েল-মোড সাইলেন্স ও ১-ক্লিক নয়েজ রিমুভ",
-                        "2. Dual-Mode Silence & Sample Noise Removal"
+                        "২. নয়েজ প্রোফাইল ও সাইলেন্স স্কিপ রেকর্ডিং",
+                        "2. Noise Profile & Silence Skip Recording"
                     ),
                     desc = tr(
                         language,
-                        "• Editor ট্যাবে ওয়েভফর্মের যেকোনো নয়েজ অংশে ট্যাপ করে 'স্যাম্পল নিন' ও '১-ক্লিকে নয়েজ মুছুন' চাপুন।\n• সাইলেন্স রিমুভালে dB মোড অথবা সেকেন্ড লিমিট মোড (যেমন > ২ সেকেন্ড) সিলেক্ট করে 'সাইলেন্স কেটে বাদ দিন' বাটনে চাপুন।",
-                        "• In the Editor tab, tap any region on the waveform, click 'Sample Noise', then '1-Click Clean'.\n• Choose Dual Mode, dB Mode, or Seconds Limit Mode (e.g. > 2s) and tap 'Remove Silence'."
+                        "• ৩-৫ সেকেন্ড ফ্যান/এসি শব্দের 'নয়েজ প্রিন্ট' ক্যাপচার করলে কণ্ঠের একুরেসি ১০০% রেখে ব্যাকগ্রাউন্ড নয়েজ মুছে যাবে।\n• সাইলেন্স স্কিপ স্লাইডারে সেকেন্ড (১-৩ সে.) ও dB সেট করলে চুপ থাকা অংশ অটো-পজ হবে।",
+                        "• Capture a 3–5s Noise Print to remove background noise with 100% vocal accuracy.\n• Set Silence Skip seconds & dB threshold to auto-pause during quiet gaps."
                     )
                 )
 
                 GuideSectionItem(
                     icon = Icons.Filled.CallSplit,
-                    accent = ElectricCyan,
+                    accent = EmeraldNeon,
                     title = tr(
                         language,
-                        "৩. অটো-স্প্লিট (১০০ টুকরো) ও '+' টাইম রেঞ্জ",
-                        "3. Auto-Split (100 Clips) & '+' Time Ranges"
+                        "৩. WAV ভিউ সিলেক্টর, '+' মাল্টি-কাট ও গ্যালারি সেভ",
+                        "3. Visual WAV Multi-Cut, '+' Ranges & Gallery Save"
                     ),
                     desc = tr(
                         language,
-                        "• 'সাইলেন্স অনুযায়ী অটো-স্প্লিট' চাপলে লম্বা অডিও বিরতি অনুযায়ী ১০০ টুকরো পর্যন্ত ভাগ হয়ে যাবে।\n• নিজের মতো টুকরো করতে '+ নতুন রেঞ্জ' বাটনে চেপে শুরু ও শেষ সেকেন্ড (যেমন ১ থেকে ১২ সে.) লিখে স্প্লিট করুন এবং প্রতিটি টুকরো Play করে শুনুন।",
-                        "• Tap 'Auto-Split by Silence' to slice long recordings into up to 100 clips automatically.\n• Or tap '+ Add Range' to enter custom start/end seconds (e.g. 1 to 20s) and play each clip."
+                        "• Editor ট্যাবে সরাসরি WAV ওয়েভফর্ম ভিউ থেকে শুরু ও শেষ অংশ সিলেক্ট করে '+ WAV সিলেকশন যোগ করুন' চাপুন, অথবা নিচে '+' বাটন দিয়ে একাধিক টাইম স্লট লিখুন।\n• কাট করা সমস্ত অডিও এক ক্লিকেই MP3, WAV বা AAC ফরম্যাটে ফোনের গ্যালারিতে সেভ করতে পারবেন।",
+                        "• Visually drag/select start & end points on the WAV waveform and tap '+' to add to your cut list, or type custom ranges.\n• Save all cut clips to your phone's Gallery in MP3, WAV, or AAC format."
                     )
                 )
 
                 GuideSectionItem(
                     icon = Icons.Filled.AutoAwesome,
-                    accent = EmeraldNeon,
+                    accent = AmberGold,
                     title = tr(
                         language,
-                        "৪. এআই ভয়েস এনহ্যান্সার ও অটো-নর্মালাইজেশন",
-                        "4. AI Voice Enhancer & Auto-Normalization"
+                        "৪. অফলাইন AI ভয়েস এনহ্যান্সার, ডি-ব্রেথ ও MP3/WAV/AAC এক্সপোর্ট",
+                        "4. Offline AI Voice Studio, De-Breath & Multi-Format Export"
                     ),
                     desc = tr(
                         language,
-                        "• Effects ট্যাবে গিয়ে 'ভয়েস বুস্টার' ও 'অটো-নর্মালাইজেশন' চালু করলে পুরো অডিওর সাউন্ড এক লেভেলে চলে আসবে।\n• পডকাস্ট কোয়ালিটি ভয়েসের জন্য Crystal Podcast বা Broadcast প্রিসেট সিলেক্ট করে মাস্টারিং বাটনে চাপুন।",
-                        "• In the Effects tab, enable Auto-Normalization and adjust Voice Booster (+dB) for uniform loudness.\n• Pick an AI Studio Preset (Crystal Podcast, Broadcast Warm, etc.) and tap Apply Mastering."
+                        "• Effects ট্যাবে Smart De-Breath (নিঃশ্বাসের শব্দ ও ক্লিক রিমুভ), ভয়েস ক্যারেক্টার (Deep Baritone / News Anchor), ভয়েস বুস্টার ও অটো-নর্মালাইজেশন প্রয়োগ করে MP3, WAV বা AAC ফরম্যাটে এক্সপোর্ট করুন।",
+                        "• In Effects tab, apply Smart De-Breath/De-Click, Offline Voice Character, Auto-Normalization, and export as MP3, WAV, AAC, or Clean Video."
                     )
                 )
 
@@ -821,7 +984,7 @@ fun SettingsAndFeatureGuideDialog(
                     desc = tr(
                         language,
                         "• AI Studio-এর উপরের ডান কোণায় Settings (⚙️) বা Export মেনুতে ক্লিক করে 'Download APK' সিলেক্ট করলেই সরাসরি আপনার ফোনে বা পিসিতে ইনস্টলযোগ্য APK ফাইল ডাউনলোড হয়ে যাবে।",
-                        "• Click the AI Studio Settings (⚙️) or Export menu at the top-right of the browser and select 'Download APK' or 'Export ZIP' to install the app on your device."
+                        "• Click the AI Studio Settings (⚙️) or Export menu at the top-right of the browser and select 'Download APK' or 'Export ZIP'."
                     )
                 )
             }

@@ -113,6 +113,24 @@ fun SonicForgeStudioApp(viewModel: StudioViewModel = viewModel()) {
         viewModel.toggleRecording(hasMicPermission = granted)
     }
 
+    // Zero-permission Gallery Audio Picker (MP3, WAV, AAC, M4A, OGG)
+    val galleryAudioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importMediaFromGalleryUri(uri = uri, isVideo = false)
+        }
+    }
+
+    // Zero-permission Gallery Video Picker (MP4, MKV, MOV) for Video Noise & Silence Cleaning
+    val galleryVideoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importMediaFromGalleryUri(uri = uri, isVideo = true)
+        }
+    }
+
     if (uiState.currentTab != StudioTab.RECORDER) {
         BackHandler {
             viewModel.selectTab(StudioTab.RECORDER)
@@ -149,10 +167,10 @@ fun SonicForgeStudioApp(viewModel: StudioViewModel = viewModel()) {
                     icon = {
                         Icon(
                             imageVector = if (uiState.currentTab == StudioTab.RECORDER) Icons.Filled.Mic else Icons.Outlined.Mic,
-                            contentDescription = tr(lang, "রেকর্ডার", "Recorder")
+                            contentDescription = tr(lang, "রেকর্ডার ও ইনপুট", "Recorder & Import")
                         )
                     },
-                    label = { Text(tr(lang, "১. রেকর্ডার", "1. Recorder")) },
+                    label = { Text(tr(lang, "১. রেকর্ড/ইনপুট", "1. Record/Import")) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = ObsidianBg,
                         selectedTextColor = ElectricCyan,
@@ -169,10 +187,10 @@ fun SonicForgeStudioApp(viewModel: StudioViewModel = viewModel()) {
                     icon = {
                         Icon(
                             imageVector = if (uiState.currentTab == StudioTab.EDITOR) Icons.Filled.ContentCut else Icons.Outlined.ContentCut,
-                            contentDescription = tr(lang, "এডিটর ও স্প্লিটার", "Editor & Splitter")
+                            contentDescription = tr(lang, "WAV কাট ও স্প্লিট", "WAV Cut & Split")
                         )
                     },
-                    label = { Text(tr(lang, "২. এডিটর ও স্প্লিট", "2. Editor & Split")) },
+                    label = { Text(tr(lang, "২. WAV কাট/স্প্লিট", "2. WAV Cut/Split")) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = ObsidianBg,
                         selectedTextColor = AmberGold,
@@ -189,10 +207,10 @@ fun SonicForgeStudioApp(viewModel: StudioViewModel = viewModel()) {
                     icon = {
                         Icon(
                             imageVector = if (uiState.currentTab == StudioTab.EFFECTS) Icons.Filled.Equalizer else Icons.Outlined.Equalizer,
-                            contentDescription = tr(lang, "ইফেক্টস ও AI ভয়েস", "Effects & AI Voice")
+                            contentDescription = tr(lang, "AI ভয়েস ও এক্সপোর্ট", "AI Voice & Export")
                         )
                     },
-                    label = { Text(tr(lang, "৩. ইফেক্টস ও AI", "3. Effects & AI")) },
+                    label = { Text(tr(lang, "৩. AI ও এক্সপোর্ট", "3. AI & Export")) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = ObsidianBg,
                         selectedTextColor = ElectricCyan,
@@ -217,7 +235,9 @@ fun SonicForgeStudioApp(viewModel: StudioViewModel = viewModel()) {
                 playbackSec = uiState.playbackPositionSec,
                 statusMessage = uiState.statusBannerMessage,
                 onTogglePlay = { viewModel.toggleMainTrackPlayback() },
-                onGenerateDemo = { viewModel.generateFreshDemoTrack() }
+                onImportAudio = { galleryAudioPickerLauncher.launch("audio/*") },
+                onImportVideo = { galleryVideoPickerLauncher.launch("video/*") },
+                onGenerateDemo = { viewModel.generateFreshDemoTrack(isVideoDemo = false) }
             )
 
             Box(modifier = Modifier.weight(1f)) {
@@ -240,6 +260,9 @@ fun SonicForgeStudioApp(viewModel: StudioViewModel = viewModel()) {
                                     micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
                             },
+                            onImportAudioFromGallery = { galleryAudioPickerLauncher.launch("audio/*") },
+                            onImportVideoFromGallery = { galleryVideoPickerLauncher.launch("video/*") },
+                            onGenerateVideoDemo = { viewModel.generateFreshDemoTrack(isVideoDemo = true) },
                             onSelectTrack = viewModel::selectTrack
                         )
                     }
@@ -254,11 +277,16 @@ fun SonicForgeStudioApp(viewModel: StudioViewModel = viewModel()) {
                             onCaptureNoiseFromSelection = viewModel::captureNoiseFromWaveformSelection,
                             onOneClickNoiseRemoval = viewModel::applyOneClickNoiseRemoval,
                             onExecuteSilenceRemoval = viewModel::executeDualModeSilenceRemoval,
+                            onUpdateVisualCutRange = viewModel::updateVisualCutSelection,
+                            onAddVisualSelectionToCutList = viewModel::addVisualSelectionToCutRanges,
                             onRunAutoSilenceSplit = viewModel::runSilenceBasedAutoSplit,
                             onAddManualRangeSlot = viewModel::addManualTimeRangeSlot,
                             onUpdateManualRangeSlot = viewModel::updateManualTimeRangeSlot,
                             onRemoveManualRangeSlot = viewModel::removeManualTimeRangeSlot,
                             onRunManualRangeSplit = viewModel::runManualRangeSplit,
+                            onSelectExportFormat = viewModel::selectExportFormat,
+                            onExportSingleClipToGallery = viewModel::exportSingleClipToGallery,
+                            onBatchExportAllClipsToGallery = viewModel::batchExportAllSplitClipsToGallery,
                             onToggleClipPlay = viewModel::toggleSplitClipPlayback
                         )
                     }
@@ -271,7 +299,14 @@ fun SonicForgeStudioApp(viewModel: StudioViewModel = viewModel()) {
                             onToggleAutoNormalize = viewModel::toggleAutoNormalize,
                             onTargetPeakChange = viewModel::updateTargetPeakDb,
                             onWarmthAndClarityChange = viewModel::updateCustomWarmthAndClarity,
-                            onApplyMastering = viewModel::applyStudioEffectsAndMastering
+                            onToggleDeBreathAndClick = viewModel::toggleDeBreathAndClickClean,
+                            onSelectVoiceCharacter = viewModel::selectOfflineVoiceCharacter,
+                            onSpeechSpeedChange = viewModel::updateSpeechSpeedFactor,
+                            onApplyMastering = viewModel::applyStudioEffectsAndMastering,
+                            onSelectExportFormat = viewModel::selectExportFormat,
+                            onSelectExportBitrate = viewModel::selectExportBitrate,
+                            onExportTrackToGallery = viewModel::exportActiveTrackToGallery,
+                            onCleanAndExportVideoToGallery = viewModel::cleanAndExportVideoToGallery
                         )
                     }
                 }
@@ -325,8 +360,8 @@ private fun StudioTopHeader(
                     Text(
                         text = tr(
                             language,
-                            "প্রো নয়েজ লার্নিং, অটো-স্প্লিটার ও AI ভয়েস",
-                            "Pro Noise Learning, Splitter & AI Voice"
+                            "১০০% অফলাইন অডিও/ভিডিও নয়েজ ও WAV স্প্লিটার",
+                            "100% Offline Audio/Video Noise & WAV Splitter"
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary
@@ -338,7 +373,6 @@ private fun StudioTopHeader(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Dual Language Pill Switcher (বাংলা | EN)
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
@@ -368,7 +402,6 @@ private fun StudioTopHeader(
                     )
                 }
 
-                // Settings & Feature Usage Guide Icon Button
                 IconButton(
                     onClick = onOpenSettingsGuide,
                     modifier = Modifier

@@ -20,12 +20,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -33,6 +36,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -45,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -77,6 +82,9 @@ fun RecorderScreen(
     onSilenceDbChange: (Float) -> Unit,
     onSilenceLimitSecChange: (Float) -> Unit,
     onToggleRecord: () -> Unit,
+    onImportAudioFromGallery: () -> Unit,
+    onImportVideoFromGallery: () -> Unit,
+    onGenerateVideoDemo: () -> Unit,
     onSelectTrack: (AudioTrackEntity) -> Unit
 ) {
     val lang = uiState.language
@@ -92,6 +100,16 @@ fun RecorderScreen(
             SmartRecordHeroConsole(
                 uiState = uiState,
                 onToggleRecord = onToggleRecord
+            )
+        }
+
+        // Gallery Audio & Video Offline Import Hub Card
+        item {
+            GalleryMediaImportHubCard(
+                uiState = uiState,
+                onImportAudio = onImportAudioFromGallery,
+                onImportVideo = onImportVideoFromGallery,
+                onGenerateVideoDemo = onGenerateVideoDemo
             )
         }
 
@@ -122,8 +140,8 @@ fun RecorderScreen(
                 Text(
                     text = tr(
                         lang,
-                        "রেকর্ড করা ও প্রসেসড অডিও ট্র্যাকসমূহ (${savedTracks.size})",
-                        "Recorded & Processed Audio Tracks (${savedTracks.size})"
+                        "রেকর্ড করা ও ইনপুটকৃত অডিও/ভিডিও ট্র্যাকসমূহ (${savedTracks.size})",
+                        "Recorded & Imported Audio/Video Tracks (${savedTracks.size})"
                     ),
                     style = MaterialTheme.typography.titleMedium,
                     color = TextPrimary,
@@ -192,6 +210,138 @@ fun RecorderScreen(
 }
 
 @Composable
+private fun GalleryMediaImportHubCard(
+    uiState: StudioUiState,
+    onImportAudio: () -> Unit,
+    onImportVideo: () -> Unit,
+    onGenerateVideoDemo: () -> Unit
+) {
+    val lang = uiState.language
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = StudioSurface,
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, BorderSubtle, RoundedCornerShape(18.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.FolderOpen,
+                    contentDescription = null,
+                    tint = ElectricCyan
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = tr(
+                            lang,
+                            "গ্যালারি থেকে অডিও বা ভিডিও ইনপুট করুন (১০০% অফলাইন)",
+                            "Import Audio or Video from Gallery (100% Offline)"
+                        ),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = tr(
+                            lang,
+                            "ফোনের যেকোনো অডিও (MP3/WAV/AAC) বা ভিডিও ইনপুট করে নয়েজ/সাইলেন্স কাটুন",
+                            "Import phone audio or video files to remove noise, cut silence & split"
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onImportAudio,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ElectricCyan,
+                        contentColor = ObsidianBg
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("gallery_import_audio_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.AudioFile,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = tr(lang, "অডিও ইনপুট", "Import Audio"),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Button(
+                    onClick = onImportVideo,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = VioletAi,
+                        contentColor = ObsidianBg
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("gallery_import_video_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.VideoFile,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = tr(lang, "ভিডিও ইনপুট", "Import Video"),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            OutlinedButton(
+                onClick = onGenerateVideoDemo,
+                border = ButtonDefaults.outlinedButtonBorder(true).copy(
+                    brush = SolidColor(AmberGold.copy(alpha = 0.7f))
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .testTag("load_demo_video_track_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.VideoFile,
+                    contentDescription = null,
+                    tint = AmberGold,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = tr(
+                        lang,
+                        "টেস্টের জন্য স্যাম্পল ভিডিও + নয়েজ ট্র্যাক লোড করুন",
+                        "Load Sample Video + Fan Noise Track for Testing"
+                    ),
+                    color = AmberGold,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SmartRecordHeroConsole(
     uiState: StudioUiState,
     onToggleRecord: () -> Unit
@@ -253,7 +403,7 @@ private fun SmartRecordHeroConsole(
                     uiState.isRecording && uiState.liveTelemetry.isCurrentlySkippingSilence ->
                         tr(lang, "AUTO-PAUSED (সাইলেন্স স্কিপ)", "AUTO-PAUSED (SILENCE SKIP)")
                     uiState.isRecording -> tr(lang, "লাইভ রেকর্ডিং চলছে", "LIVE RECORDING")
-                    else -> "READY • 100% ACCURACY"
+                    else -> "100% OFFLINE • READY"
                 }
 
                 Box(
@@ -272,7 +422,6 @@ private fun SmartRecordHeroConsole(
                 }
             }
 
-            // Custom Canvas Real-Time Audio Waveform Visualizer during Recording & Standby
             RealTimeRecordingWaveformCanvas(
                 isRecording = uiState.isRecording,
                 isSkippingSilence = uiState.liveTelemetry.isCurrentlySkippingSilence,
@@ -282,7 +431,6 @@ private fun SmartRecordHeroConsole(
                 language = lang
             )
 
-            // Big Studio Record Button + Live Telemetry
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -346,7 +494,6 @@ private fun SmartRecordHeroConsole(
                 }
             }
 
-            // Live Input Level dB Bar
             val normLevel = ((currentDb + 60f) / 60f).coerceIn(0.02f, 1f)
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(

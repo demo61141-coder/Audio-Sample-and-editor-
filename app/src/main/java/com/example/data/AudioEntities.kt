@@ -11,6 +11,76 @@ enum class AppLanguage(val code: String, val displayName: String) {
 fun tr(lang: AppLanguage, bn: String, en: String): String =
     if (lang == AppLanguage.BN) bn else en
 
+enum class AudioExportFormat(
+    val id: String,
+    val label: String,
+    val extension: String,
+    val mimeType: String,
+    val descBn: String,
+    val descEn: String
+) {
+    WAV(
+        id = "wav",
+        label = "WAV (Lossless PCM)",
+        extension = "wav",
+        mimeType = "audio/wav",
+        descBn = "আনকম্প্রেসড ১৬-বিট স্টুডিও মাস্টার কোয়ালিটি (.wav)",
+        descEn = "Uncompressed 16-bit Studio Master Quality (.wav)"
+    ),
+    MP3(
+        id = "mp3",
+        label = "MP3 (Universal)",
+        extension = "mp3",
+        mimeType = "audio/mpeg",
+        descBn = "সব ডিভাইসে সাপোর্ট করা ইউনিভার্সাল অডিও ফরম্যাট (.mp3)",
+        descEn = "Universal compatibility audio format (.mp3)"
+    ),
+    AAC(
+        id = "aac",
+        label = "AAC / M4A (HD Compact)",
+        extension = "m4a",
+        mimeType = "audio/mp4",
+        descBn = "কম সাইজে হাই-ডেফিনিশন হার্ডওয়্যার এনকোডেড অডিও (.m4a)",
+        descEn = "High-efficiency hardware encoded AAC audio (.m4a)"
+    );
+
+    fun description(lang: AppLanguage): String = tr(lang, descBn, descEn)
+}
+
+enum class OfflineVoiceCharacter(
+    val id: String,
+    val titleBn: String,
+    val titleEn: String,
+    val pitchFactor: Float
+) {
+    NATURAL(
+        id = "natural",
+        titleBn = "ন্যাচারাল অরিজিনাল ভয়েস",
+        titleEn = "Natural Original Voice",
+        pitchFactor = 1.0f
+    ),
+    DEEP_BARITONE(
+        id = "deep_baritone",
+        titleBn = "ডিপ পডকাস্ট ব্যারিটোন (Deep Voice)",
+        titleEn = "Deep Podcast Baritone",
+        pitchFactor = 0.90f
+    ),
+    BRIGHT_ANCHOR(
+        id = "bright_anchor",
+        titleBn = "ক্রিস্প নিউজ অ্যাঙ্কর (Crisp Anchor)",
+        titleEn = "Crisp News Anchor",
+        pitchFactor = 1.07f
+    ),
+    PRIVACY_MASK(
+        id = "privacy_mask",
+        titleBn = "অ্যানোনিমাস ভয়েস মাস্ক (Privacy Mode)",
+        titleEn = "Anonymous Voice Mask",
+        pitchFactor = 0.82f
+    );
+
+    fun title(lang: AppLanguage): String = tr(lang, titleBn, titleEn)
+}
+
 @Entity(tableName = "audio_tracks")
 data class AudioTrackEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -24,6 +94,8 @@ data class AudioTrackEntity(
     val silenceRemovedSec: Float = 0.0f,
     val isNoiseFiltered: Boolean = false,
     val isNormalized: Boolean = false,
+    val isVideoTrack: Boolean = false,
+    val sourceVideoPath: String? = null,
     val aiPresetApplied: String = "Original",
     val waveformCsv: String = "",
     val silenceMaskCsv: String = "",

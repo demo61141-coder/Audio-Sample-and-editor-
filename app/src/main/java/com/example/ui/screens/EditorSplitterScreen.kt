@@ -25,11 +25,15 @@ import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +55,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.data.AudioExportFormat
 import com.example.data.AudioSplitClip
 import com.example.data.SilenceRemovalMode
 import com.example.data.tr
@@ -67,6 +72,8 @@ import com.example.ui.theme.StudioSurfaceElevated
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.VioletAi
+import kotlin.math.max
+import kotlin.math.min
 
 @Composable
 fun EditorSplitterScreen(
@@ -78,15 +85,20 @@ fun EditorSplitterScreen(
     onCaptureNoiseFromSelection: () -> Unit,
     onOneClickNoiseRemoval: () -> Unit,
     onExecuteSilenceRemoval: () -> Unit,
+    onUpdateVisualCutRange: (Float, Float) -> Unit,
+    onAddVisualSelectionToCutList: () -> Unit,
     onRunAutoSilenceSplit: () -> Unit,
     onAddManualRangeSlot: () -> Unit,
     onUpdateManualRangeSlot: (Long, String, String) -> Unit,
     onRemoveManualRangeSlot: (Long) -> Unit,
     onRunManualRangeSplit: () -> Unit,
+    onSelectExportFormat: (AudioExportFormat) -> Unit,
+    onExportSingleClipToGallery: (AudioSplitClip) -> Unit,
+    onBatchExportAllClipsToGallery: () -> Unit,
     onToggleClipPlay: (AudioSplitClip) -> Unit
 ) {
     val lang = uiState.language
-    val trackDur = uiState.activeTrack?.durationSec ?: 32f
+    val trackDur = max(1f, uiState.activeTrack?.durationSec ?: 32f)
 
     LazyColumn(
         modifier = Modifier
@@ -94,7 +106,7 @@ fun EditorSplitterScreen(
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // 1. Waveform Trimmer & Sample Selector Card
+        // 1. Visual WAV Waveform Multi-Cut & Noise Sample Selector Card
         item {
             Spacer(modifier = Modifier.height(4.dp))
             Surface(
@@ -113,8 +125,8 @@ fun EditorSplitterScreen(
                         Text(
                             text = tr(
                                 lang,
-                                "ওয়েভফর্ম ট্রিমার ও সাইলেন্স ডিটেক্টর",
-                                "Waveform Trimmer & Silence Detector"
+                                "WAV ওয়েভফর্ম ভিউ, মাল্টি-কাট সিলেক্টর ও সাইলেন্স ডিটেক্টর",
+                                "WAV Waveform View, Visual Multi-Cut Selector & Silence Detector"
                             ),
                             style = MaterialTheme.typography.titleMedium,
                             color = TextPrimary
@@ -122,8 +134,8 @@ fun EditorSplitterScreen(
                         Text(
                             text = tr(
                                 lang,
-                                "শনাক্তকৃত সাইলেন্স: ${uiState.detectedSilenceCount}টি অংশ (মোট ~${"%.1f".format(uiState.estimatedSilenceSec)} সেকেন্ড)",
-                                "Detected Silence: ${uiState.detectedSilenceCount} segments (~${"%.1f".format(uiState.estimatedSilenceSec)}s total)"
+                                "শনাক্তকৃত সাইলেন্স: ${uiState.detectedSilenceCount}টি অংশ (~${"%.1f".format(uiState.estimatedSilenceSec)} সে.) • সবুজ বক্স = WAV কাট রেঞ্জ",
+                                "Detected Silence: ${uiState.detectedSilenceCount} parts (~${"%.1f".format(uiState.estimatedSilenceSec)}s) • Green Box = Visual WAV Cut"
                             ),
                             style = MaterialTheme.typography.labelMedium,
                             color = AmberGold
@@ -138,22 +150,126 @@ fun EditorSplitterScreen(
                         sampleStartSec = uiState.sampleWindowStartSec,
                         sampleEndSec = uiState.sampleWindowEndSec,
                         showSampleWindow = true,
+                        visualCutStartSec = uiState.visualCutStartSec,
+                        visualCutEndSec = uiState.visualCutEndSec,
+                        showVisualCutOverlay = true,
+                        savedCutRanges = uiState.manualTimeRanges,
                         language = lang,
                         onSelectTimeSec = { tappedSec ->
                             onUpdateSampleWindow(tappedSec, (tappedSec + 3.2f).coerceAtMost(trackDur))
+                        },
+                        onDragVisualRange = { newStart, newEnd ->
+                            onUpdateVisualCutRange(newStart, newEnd)
                         }
                     )
 
-                    Text(
-                        text = tr(
-                            lang,
-                            "টিপ: ওয়েভফর্মের যেকোনো জায়গায় ট্যাপ করে নয়েজ স্যাম্পল এরিয়া (${"%.1f".format(uiState.sampleWindowStartSec)}s - ${"%.1f".format(uiState.sampleWindowEndSec)}s) সিলেক্ট করুন।",
-                            "Tip: Tap anywhere on the waveform to select a Noise Sample window (${"%.1f".format(uiState.sampleWindowStartSec)}s - ${"%.1f".format(uiState.sampleWindowEndSec)}s)."
-                        ),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
+                    // Visual WAV Multi-Cut Handle Sliders + '+' Add Visual Cut Button
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(ObsidianBg)
+                            .border(1.dp, EmeraldNeon.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = tr(
+                                    lang,
+                                    "WAV ভিউ কাট সিলেকশন: ${"%.1f".format(uiState.visualCutStartSec)}s → ${"%.1f".format(uiState.visualCutEndSec)}s",
+                                    "Visual WAV Cut Selection: ${"%.1f".format(uiState.visualCutStartSec)}s → ${"%.1f".format(uiState.visualCutEndSec)}s"
+                                ),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = EmeraldNeon
+                            )
+                            Text(
+                                text = "${"%.1f".format(uiState.visualCutEndSec - uiState.visualCutStartSec)}s",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = ElectricCyan
+                            )
+                        }
 
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = tr(lang, "শুরু:", "Start:"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary
+                            )
+                            Slider(
+                                value = uiState.visualCutStartSec,
+                                onValueChange = { newS ->
+                                    onUpdateVisualCutRange(
+                                        newS.coerceAtMost(uiState.visualCutEndSec - 0.5f),
+                                        uiState.visualCutEndSec
+                                    )
+                                },
+                                valueRange = 0f..max(1f, trackDur - 0.5f),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = EmeraldNeon,
+                                    activeTrackColor = EmeraldNeon
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("visual_wav_cut_start_slider")
+                            )
+                            Text(
+                                text = tr(lang, "শেষ:", "End:"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary
+                            )
+                            Slider(
+                                value = uiState.visualCutEndSec,
+                                onValueChange = { newE ->
+                                    onUpdateVisualCutRange(
+                                        uiState.visualCutStartSec,
+                                        newE.coerceAtLeast(uiState.visualCutStartSec + 0.5f)
+                                    )
+                                },
+                                valueRange = 0.5f..trackDur,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = ElectricCyan,
+                                    activeTrackColor = ElectricCyan
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("visual_wav_cut_end_slider")
+                            )
+                        }
+
+                        Button(
+                            onClick = onAddVisualSelectionToCutList,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldNeon,
+                                contentColor = ObsidianBg
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .testTag("add_visual_wav_cut_button")
+                        ) {
+                            Icon(imageVector = Icons.Filled.Add, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = tr(
+                                    lang,
+                                    "+ এই WAV ভিউ সিলেকশনটি কাট লিস্টে যোগ করুন (${"%.1f".format(uiState.visualCutStartSec)}s - ${"%.1f".format(uiState.visualCutEndSec)}s)",
+                                    "+ Add This Visual WAV Selection to Cut List (${"%.1f".format(uiState.visualCutStartSec)}s - ${"%.1f".format(uiState.visualCutEndSec)}s)"
+                                ),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // Sample-based 1-click noise removal buttons
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -176,7 +292,7 @@ fun EditorSplitterScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = tr(lang, "স্যাম্পল নিন", "Sample Noise"),
+                                text = tr(lang, "নয়েজ স্যাম্পল নিন", "Sample Noise"),
                                 color = VioletAi,
                                 style = MaterialTheme.typography.labelLarge
                             )
@@ -186,7 +302,7 @@ fun EditorSplitterScreen(
                             onClick = onOneClickNoiseRemoval,
                             enabled = !uiState.isProcessingDsp,
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = EmeraldNeon,
+                                containerColor = VioletAi,
                                 contentColor = ObsidianBg
                             ),
                             modifier = Modifier
@@ -421,8 +537,8 @@ fun EditorSplitterScreen(
                             Text(
                                 text = tr(
                                     lang,
-                                    "সাইলেন্স বেসড অটো-স্প্লিট অথবা '+' বাটন চেপে ম্যানুয়াল টাইম রেঞ্জ",
-                                    "Silence-based Auto-Split or Manual Time Ranges with '+' button"
+                                    "সাইলেন্স বেসড অটো-স্প্লিট অথবা WAV ভিউ ও '+' বাটন চেপে মাল্টি-কাট",
+                                    "Silence-based Auto-Split or Visual WAV + '+' Manual Multi-Cut"
                                 ),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = TextSecondary
@@ -462,8 +578,8 @@ fun EditorSplitterScreen(
                         Text(
                             text = tr(
                                 lang,
-                                "ম্যানুয়াল টাইম রেঞ্জ স্লট (${uiState.manualTimeRanges.size}টি):",
-                                "Manual Time Range Slots (${uiState.manualTimeRanges.size}):"
+                                "মাল্টি-কাট টাইম রেঞ্জ লিস্ট (${uiState.manualTimeRanges.size}টি):",
+                                "Multi-Cut Time Range Slots (${uiState.manualTimeRanges.size}):"
                             ),
                             style = MaterialTheme.typography.titleMedium,
                             color = TextPrimary
@@ -586,8 +702,8 @@ fun EditorSplitterScreen(
                         Text(
                             text = tr(
                                 lang,
-                                "টাইম রেঞ্জ অনুযায়ী অডিও টুকরো করুন (${uiState.manualTimeRanges.size} Clips)",
-                                "Split Audio by Custom Time Ranges (${uiState.manualTimeRanges.size} Clips)"
+                                "রেঞ্জ অনুযায়ী অডিও কাট/টুকরো করুন (${uiState.manualTimeRanges.size} Clips)",
+                                "Cut & Split Audio by Ranges (${uiState.manualTimeRanges.size} Clips)"
                             ),
                             fontWeight = FontWeight.Bold
                         )
@@ -596,19 +712,83 @@ fun EditorSplitterScreen(
             }
         }
 
-        // Generated Split Clips Output List
+        // 4. Generated Split Clips Output List + Save All Cut Clips to Phone Gallery (MP3 / WAV / AAC)
         if (uiState.generatedSplitClips.isNotEmpty()) {
             item {
-                Text(
-                    text = tr(
-                        lang,
-                        "টুকরো করা অডিও ক্লিপসমূহ (${uiState.generatedSplitClips.size}টি টুকরো প্রস্তুত):",
-                        "Generated Audio Split Clips (${uiState.generatedSplitClips.size} clips ready):"
-                    ),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = EmeraldNeon
-                )
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = StudioSurface,
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.5.dp, EmeraldNeon.copy(alpha = 0.6f), RoundedCornerShape(18.dp))
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = tr(
+                                lang,
+                                "কাট করা ${uiState.generatedSplitClips.size}টি অডিও ফোনের গ্যালারিতে সেভ করুন",
+                                "Save All ${uiState.generatedSplitClips.size} Cut Audio Clips to Phone Gallery"
+                            ),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = EmeraldNeon
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = tr(lang, "ফরম্যাট:", "Format:"),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextSecondary
+                            )
+                            AudioExportFormat.entries.forEach { fmt ->
+                                val selected = uiState.selectedExportFormat == fmt
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { onSelectExportFormat(fmt) },
+                                    label = { Text(fmt.extension.uppercase()) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = EmeraldNeon.copy(alpha = 0.22f),
+                                        selectedLabelColor = EmeraldNeon
+                                    ),
+                                    modifier = Modifier.testTag("splitter_export_fmt_${fmt.id}")
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = onBatchExportAllClipsToGallery,
+                            enabled = !uiState.isProcessingDsp,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldNeon,
+                                contentColor = ObsidianBg
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("save_all_clips_to_gallery_button")
+                        ) {
+                            Icon(imageVector = Icons.Filled.SaveAlt, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = tr(
+                                    lang,
+                                    "সবগুলো ক্লিপ গ্যালারিতে সেভ করুন (${uiState.selectedExportFormat.extension.uppercase()})",
+                                    "Save All ${uiState.generatedSplitClips.size} Clips to Gallery (${uiState.selectedExportFormat.extension.uppercase()})"
+                                ),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
             }
+
             items(uiState.generatedSplitClips, key = { it.filePath }) { clip ->
                 val isPlayingThis = uiState.playingClipFilePath == clip.filePath
                 Surface(
@@ -642,19 +822,38 @@ fun EditorSplitterScreen(
                                 color = TextSecondary
                             )
                         }
-                        IconButton(
-                            onClick = { onToggleClipPlay(clip) },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(if (isPlayingThis) CrimsonRecord else ElectricCyan)
-                                .testTag("play_split_clip_${clip.index}")
-                        ) {
-                            Icon(
-                                imageVector = if (isPlayingThis) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                                contentDescription = if (isPlayingThis) "Stop clip" else "Play split clip",
-                                tint = ObsidianBg
-                            )
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            IconButton(
+                                onClick = { onExportSingleClipToGallery(clip) },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(StudioSurface)
+                                    .border(1.dp, EmeraldNeon.copy(alpha = 0.6f), CircleShape)
+                                    .testTag("save_single_clip_${clip.index}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Download,
+                                    contentDescription = "Save clip to Gallery",
+                                    tint = EmeraldNeon
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { onToggleClipPlay(clip) },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isPlayingThis) CrimsonRecord else ElectricCyan)
+                                    .testTag("play_split_clip_${clip.index}")
+                            ) {
+                                Icon(
+                                    imageVector = if (isPlayingThis) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                                    contentDescription = if (isPlayingThis) "Stop clip" else "Play split clip",
+                                    tint = ObsidianBg
+                                )
+                            }
                         }
                     }
                 }

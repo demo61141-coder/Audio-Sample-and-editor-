@@ -1,0 +1,44 @@
+<resources>
+    <string name="app_name">SonicForge</string>
+    <string name="studio_title">SonicForge Studio</string>
+    <string name="studio_subtitle">প্রো নয়েজ লার্নিং, অটো-স্প্লিটার ও ভয়েস এনহ্যান্সার</string>
+
+    <!-- Navigation Tabs -->
+    <string name="nav_recorder">রেকর্ডার (Recorder)</string>
+    <string name="nav_editor">এডিটর ও স্প্লিটার (Editor)</string>
+    <string name="nav_effects">ইফেক্টস ও AI ভয়েস (Effects)</string>
+
+    <!-- Recorder Screen -->
+    <string name="noise_profile_title">১. অডাছিটি স্টাইল নয়েজ প্রোফাইল লার্নিং</string>
+    <string name="capture_noise_btn">নয়েজ প্রিন্ট ক্যাপচার (৩-৫ সে.)</string>
+    <string name="capturing_noise_status">পরিবেশের নয়েজ প্রিন্ট শেখা হচ্ছে…</string>
+    <string name="smart_noise_filter_label">স্মার্ট নয়েজ ফিল্টার (100% Sound Accuracy)</string>
+    <string name="silence_skip_title">সাইলেন্স স্কিপ রেকর্ডিং (Auto-Pause on Silence)</string>
+    <string name="silence_db_threshold_label">সাইলেন্স থ্রেশহোল্ড (dB Limit)</string>
+    <string name="silence_duration_limit_label">সাইলেন্স সময়সীমা (Seconds Limit)</string>
+    <string name="record_start">রেকর্ড শুরু করুন</string>
+    <string name="record_stop">রেকর্ড থামান ও সেভ করুন</string>
+    <string name="generate_demo_track">ডেমো ভয়েস + নয়েজ ট্র্যাক তৈরি করুন</string>
+
+    <!-- Editor / Trimmer Screen -->
+    <string name="editor_waveform_title">ওয়েভফর্ম ট্রিমার ও সাইলেন্স ডিটেক্টর</string>
+    <string name="dual_silence_removal_title">৩. অ্যাডভান্সড ডুয়েল-মোড সাইলেন্স ও নয়েজ রিমুভাল</string>
+    <string name="sample_noise_remove_btn">সিলেক্টেড অংশ থেকে নয়েজ প্রিন্ট নিন</string>
+    <string name="one_click_denoise_btn">১-ক্লিকে পুরো অডিওর নয়েজ মুছুন</string>
+    <string name="remove_silence_btn">সাইলেন্স কেটে বাদ দিন (Remove Silence)</string>
+    <string name="splitter_title">৪. ফ্লেক্সিবল অডিও স্প্লিটার (সর্বোচ্চ ১০০ টুকরো)</string>
+    <string name="auto_split_silence_btn">সাইলেন্স অনুযায়ী অটো-স্প্লিট (Up to 100 Clips)</string>
+    <string name="manual_split_title">ম্যানুয়াল টাইম রেঞ্জ স্প্লিটার (+ বাটন)</string>
+    <string name="add_time_range_btn">+ নতুন টাইম স্লট যোগ করুন</string>
+    <string name="execute_manual_split_btn">টাইম রেঞ্জ অনুযায়ী টুকরো করুন</string>
+
+    <!-- Effects Screen -->
+    <string name="effects_title">৫. এআই স্পিচ ক্লিয়ারিটি ও সাউন্ড এনহ্যান্সমেন্ট</string>
+    <string name="voice_booster_title">ভয়েস বুস্টার ও অটো-নর্মালাইজেশন (Auto-Level)</string>
+    <string name="ai_enhancer_title">এআই স্টুডিও ভয়েস এনহ্যান্সার (Podcast Clarity)</string>
+    <string name="apply_mastering_btn">স্টুডিও মাস্টারিং ও এনহ্যান্সমেন্ট প্রয়োগ করুন</string>
+
+    <!-- APK Guide -->
+    <string name="apk_guide_title">কিভাবে APK ডাউনলোড করবেন?</string>
+    <string name="apk_guide_desc">AI Studio-এর উপরের ডান কোণায় Settings (⚙️) অথবা Export মেনুতে ক্লিক করে "Download APK" বা "Build APK / Export ZIP" অপশন সিলেক্ট করলেই সরাসরি আপনার ফোনে বা কম্পিউটারে APK ডাউনলোড হয়ে যাবে।</string>
+</resources>

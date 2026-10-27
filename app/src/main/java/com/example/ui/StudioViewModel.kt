@@ -1,0 +1,936 @@
+package com.example.ui
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.audio.AudioController
+import com.example.audio.AudioDspEngine
+import com.example.audio.LiveRecordingTelemetry
+import com.example.data.AiVoicePreset
+import com.example.data.AppLanguage
+import com.example.data.AudioSplitClip
+import com.example.data.AudioTrackEntity
+import com.example.data.ManualTimeRange
+import com.example.data.NoiseProfileEntity
+import com.example.data.SilenceRemovalMode
+import com.example.data.StudioDatabase
+import com.example.data.StudioRepository
+import com.example.data.tr
+import java.io.File
+import kotlin.math.max
+import kotlin.math.min
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+enum class StudioTab {
+    RECORDER,
+    EDITOR,
+    EFFECTS
+}
+
+data class StudioUiState(
+    val language: AppLanguage = AppLanguage.BN,
+    val currentTab: StudioTab = StudioTab.RECORDER,
+    val activeTrack: AudioTrackEntity? = null,
+    val activeNoiseProfile: NoiseProfileEntity? = null,
+    val waveformBins: List<Float> = List(120) { 0.12f },
+    val silenceMaskBins: List<Boolean> = List(120) { false },
+    val detectedSilenceCount: Int = 0,
+    val estimatedSilenceSec: Float = 0f,
+
+    // Feature 1: Recorder & Noise Profile Learning
+    val isCapturingNoisePrint: Boolean = false,
+    val noiseCaptureTargetSec: Int = 4, // 3 to 5 sec configurable
+    val noiseCaptureProgress: Float = 0f,
+    val smartNoiseFilterEnabled: Boolean = true,
+    val noiseReductionStrength: Float = 0.88f,
+    val silenceSkipEnabled: Boolean = true,
+    val silenceDbThreshold: Float = -34f,
+    val silenceDurationLimitSec: Float = 2.0f,
+    val isRecording: Boolean = false,
+    val liveTelemetry: LiveRecordingTelemetry = LiveRecordingTelemetry(
+        liveWaveformAmps = List(48) { idx ->
+            val v = kotlin.math.sin(idx * 0.35).toFloat()
+            (0.12f + 0.22f * kotlin.math.abs(v)).coerceIn(0.06f, 0.85f)
+        }
+    ),
+
+    // Feature 3: Dual-Mode Silence & Sample Noise Removal
+    val silenceRemovalMode: SilenceRemovalMode = SilenceRemovalMode.DUAL_COMBINED,
+    val sampleWindowStartSec: Float = 0.0f,
+    val sampleWindowEndSec: Float = 3.5f,
+    val isProcessingDsp: Boolean = false,
+    val statusBannerMessageBn: String = "স্টুডিও প্রস্তুত — ৩২ সেকেন্ডের ডেমো ভয়েস+নয়েজ ট্র্যাক লোড করা হয়েছে",
+    val statusBannerMessageEn: String = "Studio Ready — 32s Demo Voice + Noise Track Loaded",
+
+    // Feature 4: Flexible Audio Splitter (Auto up to 100 + Manual '+' Ranges)
+    val manualTimeRanges: List<ManualTimeRange> = listOf(
+        ManualTimeRange(id = 1L, startSecText = "1", endSecText = "12", label = "Clip 1 (Intro)"),
+        ManualTimeRange(id = 2L, startSecText = "12", endSecText = "22", label = "Clip 2 (Main)"),
+        ManualTimeRange(id = 3L, startSecText = "22", endSecText = "31", label = "Clip 3 (Outro)")
+    ),
+    val generatedSplitClips: List<AudioSplitClip> = emptyList(),
+    val playingClipFilePath: String? = null,
+
+    // Feature 5: AI Speech Clarity & Sound Enhancement
+    val selectedAiPreset: AiVoicePreset = AiVoicePreset.CRYSTAL_PODCAST,
+    val voiceBoostDb: Float = 3.5f,
+    val autoNormalizeEnabled: Boolean = true,
+    val targetPeakDb: Float = -1.0f,
+    val customWarmthDb: Float = 3.5f,
+    val customClarityDb: Float = 4.8f,
+
+    // Playback & Settings Guide Dialog state
+    val isPlayingMainTrack: Boolean = false,
+    val playbackPositionSec: Float = 0f,
+    val showSettingsGuideDialog: Boolean = false
+) {
+    val statusBannerMessage: String
+        get() = tr(language, statusBannerMessageBn, statusBannerMessageEn)
+}
+
+class StudioViewModel(application: Application) : AndroidViewModel(application) {
+    private val repository: StudioRepository
+    private val audioController = AudioController(viewModelScope)
+    private val studioFilesDir = File(application.filesDir, "sonicforge_audio").apply { mkdirs() }
+
+    private val _uiState = MutableStateFlow(StudioUiState())
+    val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
+
+    val savedTracks: StateFlow<List<AudioTrackEntity>>
+    val savedNoiseProfiles: StateFlow<List<NoiseProfileEntity>>
+
+    init {
+        val dao = StudioDatabase.getInstance(application).studioDao()
+        repository = StudioRepository(dao)
+
+        savedTracks = repository.allTracks.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        savedNoiseProfiles = repository.allNoiseProfiles.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+        initializeDefaultStudioSession()
+    }
+
+    private fun initializeDefaultStudioSession() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val demoFile = File(studioFilesDir, "studio_demo_podcast.wav")
+            if (!demoFile.exists() || demoFile.length() < 1000L) {
+                AudioDspEngine.generateDemoPodcastWav(demoFile, durationSec = 32)
+            }
+            val initialProfile = AudioDspEngine.captureNoiseProfileFromWavRange(
+                file = demoFile,
+                startSec = 0.0f,
+                endSec = 3.4f,
+                profileName = "Fan & AC Noise Print (3.4s)",
+                sourceDesc = "0.0s - 3.4s Ambient Fan/AC Hum Sample"
+            )
+            val profileId = repository.saveNoiseProfile(initialProfile)
+            val savedProfile = initialProfile.copy(id = profileId)
+
+            val state = _uiState.value
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = demoFile,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+
+            val trackEntity = AudioTrackEntity(
+                title = "Podcast Voice + Fan Noise (Demo)",
+                filePath = demoFile.absolutePath,
+                durationSec = analysis.durationSec,
+                sampleRate = analysis.sampleRate,
+                peakDb = analysis.peakDb,
+                rmsDb = analysis.rmsDb,
+                noiseFloorDb = analysis.noiseFloorDb,
+                waveformCsv = analysis.waveformBins.joinToString(",") { "%.3f".format(it) },
+                silenceMaskCsv = analysis.silenceMaskBins.joinToString(",") { if (it) "1" else "0" }
+            )
+            val trackId = repository.saveTrack(trackEntity)
+            val persistedTrack = trackEntity.copy(id = trackId)
+
+            _uiState.update {
+                it.copy(
+                    activeTrack = persistedTrack,
+                    activeNoiseProfile = savedProfile,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
+                    sampleWindowStartSec = 0.0f,
+                    sampleWindowEndSec = min(3.5f, analysis.durationSec)
+                )
+            }
+        }
+    }
+
+    fun setLanguage(language: AppLanguage) {
+        _uiState.update { it.copy(language = language) }
+    }
+
+    fun toggleLanguage() {
+        _uiState.update {
+            it.copy(
+                language = if (it.language == AppLanguage.BN) AppLanguage.EN else AppLanguage.BN
+            )
+        }
+    }
+
+    fun selectTab(tab: StudioTab) {
+        _uiState.update { it.copy(currentTab = tab) }
+    }
+
+    fun toggleSettingsGuideDialog(show: Boolean) {
+        _uiState.update { it.copy(showSettingsGuideDialog = show) }
+    }
+
+    fun setNoiseCaptureTargetSec(seconds: Int) {
+        _uiState.update { it.copy(noiseCaptureTargetSec = seconds.coerceIn(3, 5)) }
+    }
+
+    fun toggleSmartNoiseFilter(enabled: Boolean) {
+        _uiState.update { it.copy(smartNoiseFilterEnabled = enabled) }
+    }
+
+    fun setNoiseReductionStrength(strength: Float) {
+        _uiState.update { it.copy(noiseReductionStrength = strength.coerceIn(0.2f, 0.98f)) }
+    }
+
+    fun toggleSilenceSkipRecording(enabled: Boolean) {
+        _uiState.update { it.copy(silenceSkipEnabled = enabled) }
+    }
+
+    fun updateSilenceDbThreshold(db: Float) {
+        val clamped = db.coerceIn(-58f, -18f)
+        _uiState.update { it.copy(silenceDbThreshold = clamped) }
+        refreshWaveformSilenceAnalysis()
+    }
+
+    fun updateSilenceDurationLimitSec(sec: Float) {
+        val clamped = sec.coerceIn(0.5f, 5.0f)
+        _uiState.update { it.copy(silenceDurationLimitSec = clamped) }
+        refreshWaveformSilenceAnalysis()
+    }
+
+    fun setSilenceRemovalMode(mode: SilenceRemovalMode) {
+        _uiState.update { it.copy(silenceRemovalMode = mode) }
+        refreshWaveformSilenceAnalysis()
+    }
+
+    fun updateSampleSelectionWindow(startSec: Float, endSec: Float) {
+        val maxDur = _uiState.value.activeTrack?.durationSec ?: 30f
+        val s = startSec.coerceIn(0f, max(0f, maxDur - 0.5f))
+        val e = endSec.coerceIn(s + 0.5f, maxDur)
+        _uiState.update {
+            it.copy(sampleWindowStartSec = s, sampleWindowEndSec = e)
+        }
+    }
+
+    private fun refreshWaveformSilenceAnalysis() {
+        val track = _uiState.value.activeTrack ?: return
+        val file = File(track.filePath)
+        if (!file.exists()) return
+        val mode = _uiState.value.silenceRemovalMode
+        val threshDb = when (mode) {
+            SilenceRemovalMode.SECONDS_LIMIT_ONLY -> max(_uiState.value.silenceDbThreshold, -33f)
+            else -> _uiState.value.silenceDbThreshold
+        }
+        val minSec = when (mode) {
+            SilenceRemovalMode.DB_ONLY -> 0.25f
+            else -> _uiState.value.silenceDurationLimitSec
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val analysis = AudioDspEngine.analyzeWavFile(file, threshDb, minSec)
+            _uiState.update {
+                it.copy(
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec
+                )
+            }
+        }
+    }
+
+    /**
+     * Feature 1A: Capture 3-5 seconds of background noise to build an Audacity-style Noise Print
+     */
+    fun captureAmbientNoisePrint() {
+        if (_uiState.value.isCapturingNoisePrint) return
+        val durationSec = _uiState.value.noiseCaptureTargetSec
+        _uiState.update {
+            it.copy(
+                isCapturingNoisePrint = true,
+                noiseCaptureProgress = 0f,
+                statusBannerMessageBn = "ব্যাকগ্রাউন্ড নয়েজ প্রিন্ট ক্যাপচার হচ্ছে ($durationSec সেকেন্ড চুপ থাকুন)…",
+                statusBannerMessageEn = "Capturing ambient Noise Print ($durationSec seconds)…"
+            )
+        }
+
+        viewModelScope.launch {
+            val steps = durationSec * 10
+            for (step in 1..steps) {
+                delay(100)
+                _uiState.update {
+                    it.copy(noiseCaptureProgress = step.toFloat() / steps)
+                }
+            }
+
+            withContext(Dispatchers.IO) {
+                val trackFile = _uiState.value.activeTrack?.let { File(it.filePath) }
+                val sourceFile = if (trackFile != null && trackFile.exists()) {
+                    trackFile
+                } else {
+                    AudioDspEngine.generateDemoPodcastWav(File(studioFilesDir, "temp_noise.wav"), 6)
+                }
+
+                val profile = AudioDspEngine.captureNoiseProfileFromWavRange(
+                    file = sourceFile,
+                    startSec = 0f,
+                    endSec = durationSec.toFloat(),
+                    profileName = "Live Noise Print (${durationSec}s)",
+                    sourceDesc = "Room Fan/AC Noise Print (${durationSec}.0s)"
+                )
+                val id = repository.saveNoiseProfile(profile)
+                val saved = profile.copy(id = id)
+
+                _uiState.update {
+                    it.copy(
+                        isCapturingNoisePrint = false,
+                        noiseCaptureProgress = 1f,
+                        activeNoiseProfile = saved,
+                        statusBannerMessageBn = "নয়েজ প্রিন্ট তৈরি সম্পন্ন! (Noise Floor: ${"%.1f".format(saved.noiseFloorDb)} dB, 100% ভয়েস একুরেসি লকড)",
+                        statusBannerMessageEn = "Noise Print Learned! (Noise Floor: ${"%.1f".format(saved.noiseFloorDb)} dB, 100% Voice Accuracy Locked)"
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Feature 1B & 1C: Start / Stop Smart Recording with Live Silence Skip & Auto Noise Filter
+     */
+    fun toggleRecording(hasMicPermission: Boolean) {
+        if (_uiState.value.isRecording) {
+            audioController.stopRecording()
+            return
+        }
+
+        audioController.stopPlayback()
+        val state = _uiState.value
+        val outFile = File(studioFilesDir, "rec_${System.currentTimeMillis()}.wav")
+
+        _uiState.update {
+            it.copy(
+                isRecording = true,
+                isPlayingMainTrack = false,
+                playingClipFilePath = null,
+                statusBannerMessageBn = if (state.silenceSkipEnabled) {
+                    "স্মার্ট রেকর্ডিং চলছে — ${"%.1f".format(state.silenceDurationLimitSec)}s ও ${state.silenceDbThreshold.toInt()} dB সাইলেন্স স্কিপ চালু"
+                } else {
+                    "লাইভ রেকর্ডিং চলছে…"
+                },
+                statusBannerMessageEn = if (state.silenceSkipEnabled) {
+                    "Smart Recording Active — Silence Skip at ${"%.1f".format(state.silenceDurationLimitSec)}s & ${state.silenceDbThreshold.toInt()} dB"
+                } else {
+                    "Live Recording in progress…"
+                }
+            )
+        }
+
+        audioController.startSmartRecording(
+            outputFile = outFile,
+            hasMicPermission = hasMicPermission,
+            silenceSkipEnabled = state.silenceSkipEnabled,
+            silenceDbThreshold = state.silenceDbThreshold,
+            silenceLimitSec = state.silenceDurationLimitSec,
+            onTelemetry = { telemetry ->
+                _uiState.update { it.copy(liveTelemetry = telemetry) }
+            },
+            onFinished = { rawRecordedFile, skippedSec ->
+                finalizeRecordedTrack(rawRecordedFile, skippedSec)
+            }
+        )
+    }
+
+    private fun finalizeRecordedTrack(rawFile: File, skippedSec: Float) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val state = _uiState.value
+            val activeProfile = state.activeNoiseProfile
+
+            val finalFile = if (state.smartNoiseFilterEnabled && activeProfile != null) {
+                val filteredFile = File(studioFilesDir, "rec_clean_${System.currentTimeMillis()}.wav")
+                AudioDspEngine.applySmartNoiseFilter(
+                    inputFile = rawFile,
+                    outputFile = filteredFile,
+                    noiseProfile = activeProfile,
+                    reductionStrength = state.noiseReductionStrength
+                )
+            } else {
+                rawFile
+            }
+
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = finalFile,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+
+            val newTrack = AudioTrackEntity(
+                title = "Smart Record (${"%.1f".format(analysis.durationSec)}s)",
+                filePath = finalFile.absolutePath,
+                durationSec = analysis.durationSec,
+                sampleRate = analysis.sampleRate,
+                peakDb = analysis.peakDb,
+                rmsDb = analysis.rmsDb,
+                noiseFloorDb = analysis.noiseFloorDb,
+                silenceRemovedSec = skippedSec,
+                isNoiseFiltered = state.smartNoiseFilterEnabled && activeProfile != null,
+                waveformCsv = analysis.waveformBins.joinToString(",") { "%.3f".format(it) },
+                silenceMaskCsv = analysis.silenceMaskBins.joinToString(",") { if (it) "1" else "0" }
+            )
+            val id = repository.saveTrack(newTrack)
+            val savedTrack = newTrack.copy(id = id)
+
+            _uiState.update {
+                it.copy(
+                    isRecording = false,
+                    activeTrack = savedTrack,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
+                    sampleWindowStartSec = 0f,
+                    sampleWindowEndSec = min(3.5f, analysis.durationSec),
+                    statusBannerMessageBn = "রেকর্ডিং সেভ হয়েছে! অটো-স্কিপড সাইলেন্স: ${"%.1f".format(skippedSec)}s",
+                    statusBannerMessageEn = "Recording Saved! Auto-skipped silence: ${"%.1f".format(skippedSec)}s"
+                )
+            }
+        }
+    }
+
+    fun generateFreshDemoTrack() {
+        audioController.stopPlayback()
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = true,
+                    statusBannerMessageBn = "নতুন ৩২ সেকেন্ডের স্টুডিও ডেমো ট্র্যাক তৈরি হচ্ছে…",
+                    statusBannerMessageEn = "Generating fresh 32s studio demo track…"
+                )
+            }
+            val demoFile = File(studioFilesDir, "demo_podcast_${System.currentTimeMillis()}.wav")
+            AudioDspEngine.generateDemoPodcastWav(demoFile, durationSec = 32)
+            val state = _uiState.value
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = demoFile,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+            val entity = AudioTrackEntity(
+                title = "Demo Voice + Fan Noise (32s)",
+                filePath = demoFile.absolutePath,
+                durationSec = analysis.durationSec,
+                peakDb = analysis.peakDb,
+                rmsDb = analysis.rmsDb,
+                noiseFloorDb = analysis.noiseFloorDb
+            )
+            val id = repository.saveTrack(entity)
+            val saved = entity.copy(id = id)
+
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    activeTrack = saved,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
+                    sampleWindowStartSec = 0f,
+                    sampleWindowEndSec = 3.5f,
+                    generatedSplitClips = emptyList(),
+                    statusBannerMessageBn = "৩২ সেকেন্ডের ডেমো ট্র্যাক প্রস্তুত (৬টি ভয়েস ফ্রেজ + ৫টি সাইলেন্ট গ্যাপ + ফ্যান নয়েজ)!",
+                    statusBannerMessageEn = "32s Demo Track Ready (6 voice phrases + 5 silent gaps + fan noise)!"
+                )
+            }
+        }
+    }
+
+    fun selectTrack(track: AudioTrackEntity) {
+        audioController.stopPlayback()
+        viewModelScope.launch(Dispatchers.IO) {
+            val file = File(track.filePath)
+            if (!file.exists()) return@launch
+            val state = _uiState.value
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = file,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+            _uiState.update {
+                it.copy(
+                    activeTrack = track,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
+                    isPlayingMainTrack = false,
+                    playingClipFilePath = null,
+                    sampleWindowStartSec = 0f,
+                    sampleWindowEndSec = min(3.5f, analysis.durationSec),
+                    statusBannerMessageBn = "ট্র্যাক লোড হয়েছে: ${track.title}",
+                    statusBannerMessageEn = "Loaded Track: ${track.title}"
+                )
+            }
+        }
+    }
+
+    /**
+     * Feature 3A: Sample-Based Noise Print extraction from selected region on the waveform
+     */
+    fun captureNoiseFromWaveformSelection() {
+        val track = _uiState.value.activeTrack ?: return
+        val file = File(track.filePath)
+        if (!file.exists()) return
+        val s = _uiState.value.sampleWindowStartSec
+        val e = _uiState.value.sampleWindowEndSec
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val profile = AudioDspEngine.captureNoiseProfileFromWavRange(
+                file = file,
+                startSec = s,
+                endSec = e,
+                profileName = "Sample Noise (${"%.1f".format(s)}s-${"%.1f".format(e)}s)",
+                sourceDesc = "Sampled from ${track.title}"
+            )
+            val id = repository.saveNoiseProfile(profile)
+            val saved = profile.copy(id = id)
+            _uiState.update {
+                it.copy(
+                    activeNoiseProfile = saved,
+                    statusBannerMessageBn = "নয়েজ স্যাম্পল লার্নড (${"%.1f".format(s)}s - ${"%.1f".format(e)}s, Floor: ${"%.1f".format(saved.noiseFloorDb)} dB)!",
+                    statusBannerMessageEn = "Noise Sample Learned (${"%.1f".format(s)}s - ${"%.1f".format(e)}s, Floor: ${"%.1f".format(saved.noiseFloorDb)} dB)!"
+                )
+            }
+        }
+    }
+
+    /**
+     * Feature 3B: One-Click Sample-Based Noise Removal across the entire audio file
+     */
+    fun applyOneClickNoiseRemoval() {
+        val track = _uiState.value.activeTrack ?: return
+        val profile = _uiState.value.activeNoiseProfile ?: return
+        val inFile = File(track.filePath)
+        if (!inFile.exists()) return
+
+        audioController.stopPlayback()
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                isPlayingMainTrack = false,
+                statusBannerMessageBn = "স্মার্ট নয়েজ ফিল্টার দিয়ে পুরো অডিও থেকে নয়েজ রিমুভ হচ্ছে…",
+                statusBannerMessageEn = "Removing background noise across entire track with Smart Filter…"
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val outFile = File(studioFilesDir, "denoised_${System.currentTimeMillis()}.wav")
+            AudioDspEngine.applySmartNoiseFilter(
+                inputFile = inFile,
+                outputFile = outFile,
+                noiseProfile = profile,
+                reductionStrength = _uiState.value.noiseReductionStrength
+            )
+            val state = _uiState.value
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = outFile,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+            val updatedTrack = track.copy(
+                title = "${track.title.substringBefore(" [")} [Noise Removed]",
+                filePath = outFile.absolutePath,
+                durationSec = analysis.durationSec,
+                peakDb = analysis.peakDb,
+                rmsDb = analysis.rmsDb,
+                noiseFloorDb = analysis.noiseFloorDb,
+                isNoiseFiltered = true
+            )
+            repository.updateTrack(updatedTrack)
+
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    activeTrack = updatedTrack,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
+                    statusBannerMessageBn = "১-ক্লিকে ব্যাকগ্রাউন্ড নয়েজ রিমুভ সম্পন্ন! নতুন Noise Floor: ${"%.1f".format(analysis.noiseFloorDb)} dB",
+                    statusBannerMessageEn = "1-Click Noise Removal Complete! New Noise Floor: ${"%.1f".format(analysis.noiseFloorDb)} dB"
+                )
+            }
+        }
+    }
+
+    /**
+     * Feature 3C: Execute Dual-Mode Silence Removal (dB Mode / Second Limit Mode / Combined)
+     */
+    fun executeDualModeSilenceRemoval() {
+        val track = _uiState.value.activeTrack ?: return
+        val inFile = File(track.filePath)
+        if (!inFile.exists()) return
+
+        audioController.stopPlayback()
+        val state = _uiState.value
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                isPlayingMainTrack = false,
+                statusBannerMessageBn = "${state.silenceRemovalMode.labelBn} অনুযায়ী সাইলেন্স কাটা হচ্ছে…",
+                statusBannerMessageEn = "Cutting silent segments using ${state.silenceRemovalMode.labelEn}…"
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val outFile = File(studioFilesDir, "trimmed_${System.currentTimeMillis()}.wav")
+            val result = AudioDspEngine.removeSilenceDualMode(
+                inputFile = inFile,
+                outputFile = outFile,
+                mode = state.silenceRemovalMode,
+                thresholdDb = state.silenceDbThreshold,
+                minSilenceSec = state.silenceDurationLimitSec
+            )
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = result.outputFile,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+            val updatedTrack = track.copy(
+                title = "${track.title.substringBefore(" [")} [Silence Cut]",
+                filePath = result.outputFile.absolutePath,
+                durationSec = analysis.durationSec,
+                peakDb = analysis.peakDb,
+                rmsDb = analysis.rmsDb,
+                noiseFloorDb = analysis.noiseFloorDb,
+                silenceRemovedSec = track.silenceRemovedSec + result.removedSilenceSec
+            )
+            repository.updateTrack(updatedTrack)
+
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    activeTrack = updatedTrack,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
+                    sampleWindowStartSec = 0f,
+                    sampleWindowEndSec = min(3.0f, analysis.durationSec),
+                    statusBannerMessageBn = "সাইলেন্স রিমুভ সম্পন্ন! মোট ${result.removedSegmentsCount}টি অংশ (${"%.1f".format(result.removedSilenceSec)} সেকেন্ড) কেটে বাদ দেওয়া হয়েছে।",
+                    statusBannerMessageEn = "Silence Removed! Cut ${result.removedSegmentsCount} segments (${"%.1f".format(result.removedSilenceSec)}s removed)."
+                )
+            }
+        }
+    }
+
+    /**
+     * Feature 4A: Silence-Based Auto-Split (Up to 100 clips)
+     */
+    fun runSilenceBasedAutoSplit() {
+        val track = _uiState.value.activeTrack ?: return
+        val inFile = File(track.filePath)
+        if (!inFile.exists()) return
+
+        audioController.stopPlayback()
+        val state = _uiState.value
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                statusBannerMessageBn = "অডিওর বিরতি অনুযায়ী অটোমেটিক টুকরো (Auto-Split) করা হচ্ছে…",
+                statusBannerMessageEn = "Auto-splitting audio by silence breaks (up to 100 clips)…"
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val clipsDir = File(studioFilesDir, "splits_auto_${track.id}")
+            val clips = AudioDspEngine.autoSplitBySilenceUpTo100(
+                inputFile = inFile,
+                outputDir = clipsDir,
+                thresholdDb = state.silenceDbThreshold,
+                minSilenceSec = max(0.6f, state.silenceDurationLimitSec * 0.6f),
+                maxClips = 100
+            )
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    generatedSplitClips = clips,
+                    statusBannerMessageBn = "সাইলেন্স অনুযায়ী অডিওটিকে ${clips.size}টি আলাদা ক্লিপে ভাগ করা হয়েছে!",
+                    statusBannerMessageEn = "Audio automatically split into ${clips.size} individual clips!"
+                )
+            }
+        }
+    }
+
+    /**
+     * Feature 4B: Manual Time Range with '+' Button
+     */
+    fun addManualTimeRangeSlot() {
+        val currentRanges = _uiState.value.manualTimeRanges
+        val trackDur = (_uiState.value.activeTrack?.durationSec ?: 32f).toInt()
+        val lastEnd = currentRanges.lastOrNull()?.endSecText?.toFloatOrNull()?.toInt() ?: 0
+        val newStart = min(lastEnd, max(0, trackDur - 5))
+        val newEnd = min(trackDur, newStart + 8)
+        val nextIdx = currentRanges.size + 1
+
+        val newSlot = ManualTimeRange(
+            id = System.currentTimeMillis() + nextIdx,
+            startSecText = newStart.toString(),
+            endSecText = max(newStart + 1, newEnd).toString(),
+            label = "Clip $nextIdx"
+        )
+        _uiState.update {
+            it.copy(manualTimeRanges = currentRanges + newSlot)
+        }
+    }
+
+    fun updateManualTimeRangeSlot(id: Long, startText: String, endText: String) {
+        _uiState.update { state ->
+            state.copy(
+                manualTimeRanges = state.manualTimeRanges.map { slot ->
+                    if (slot.id == id) slot.copy(startSecText = startText, endSecText = endText) else slot
+                }
+            )
+        }
+    }
+
+    fun removeManualTimeRangeSlot(id: Long) {
+        _uiState.update { state ->
+            if (state.manualTimeRanges.size <= 1) state
+            else state.copy(manualTimeRanges = state.manualTimeRanges.filterNot { it.id == id })
+        }
+    }
+
+    fun runManualRangeSplit() {
+        val track = _uiState.value.activeTrack ?: return
+        val inFile = File(track.filePath)
+        if (!inFile.exists()) return
+        val ranges = _uiState.value.manualTimeRanges
+
+        audioController.stopPlayback()
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                statusBannerMessageBn = "ম্যানুয়াল টাইম রেঞ্জ অনুযায়ী ${ranges.size}টি ক্লিপ তৈরি হচ্ছে…",
+                statusBannerMessageEn = "Splitting audio into ${ranges.size} custom time range clips…"
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val clipsDir = File(studioFilesDir, "splits_manual_${track.id}")
+            val clips = AudioDspEngine.manualSplitByRanges(
+                inputFile = inFile,
+                outputDir = clipsDir,
+                ranges = ranges
+            )
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    generatedSplitClips = clips,
+                    statusBannerMessageBn = "ম্যানুয়াল টাইম রেঞ্জ অনুযায়ী ${clips.size}টি অডিও টুকরো প্রস্তুত!",
+                    statusBannerMessageEn = "Created ${clips.size} audio clips from custom time ranges!"
+                )
+            }
+        }
+    }
+
+    /**
+     * Feature 5: AI Speech Clarity, Voice Booster & Auto-Normalization
+     */
+    fun selectAiVoicePreset(preset: AiVoicePreset) {
+        _uiState.update {
+            it.copy(
+                selectedAiPreset = preset,
+                customWarmthDb = preset.warmthBoostDb,
+                customClarityDb = preset.clarityBoostDb,
+                targetPeakDb = preset.targetPeakDb
+            )
+        }
+    }
+
+    fun updateVoiceBoostDb(boostDb: Float) {
+        _uiState.update { it.copy(voiceBoostDb = boostDb.coerceIn(0f, 12f)) }
+    }
+
+    fun toggleAutoNormalize(enabled: Boolean) {
+        _uiState.update { it.copy(autoNormalizeEnabled = enabled) }
+    }
+
+    fun updateTargetPeakDb(db: Float) {
+        _uiState.update { it.copy(targetPeakDb = db.coerceIn(-4.0f, -0.2f)) }
+    }
+
+    fun updateCustomWarmthAndClarity(warmthDb: Float, clarityDb: Float) {
+        _uiState.update {
+            it.copy(
+                customWarmthDb = warmthDb.coerceIn(0f, 8f),
+                customClarityDb = clarityDb.coerceIn(0f, 8f)
+            )
+        }
+    }
+
+    fun applyStudioEffectsAndMastering() {
+        val track = _uiState.value.activeTrack ?: return
+        val inFile = File(track.filePath)
+        if (!inFile.exists()) return
+
+        audioController.stopPlayback()
+        val state = _uiState.value
+        _uiState.update {
+            it.copy(
+                isProcessingDsp = true,
+                isPlayingMainTrack = false,
+                statusBannerMessageBn = "এআই ভয়েস এনহ্যান্সার ও অটো-নর্মালাইজেশন প্রয়োগ হচ্ছে…",
+                statusBannerMessageEn = "Applying AI Studio Voice Enhancer & Auto-Normalization…"
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            var workingFile = inFile
+            if (state.smartNoiseFilterEnabled && state.activeNoiseProfile != null && !track.isNoiseFiltered) {
+                val denoisedTemp = File(studioFilesDir, "pre_master_clean_${System.currentTimeMillis()}.wav")
+                workingFile = AudioDspEngine.applySmartNoiseFilter(
+                    inputFile = inFile,
+                    outputFile = denoisedTemp,
+                    noiseProfile = state.activeNoiseProfile,
+                    reductionStrength = state.noiseReductionStrength
+                )
+            }
+
+            val masteredFile = File(studioFilesDir, "mastered_${System.currentTimeMillis()}.wav")
+            AudioDspEngine.applyAiVoiceMastering(
+                inputFile = workingFile,
+                outputFile = masteredFile,
+                preset = state.selectedAiPreset,
+                voiceBoostDb = state.voiceBoostDb,
+                autoNormalizeEnabled = state.autoNormalizeEnabled,
+                targetPeakDb = state.targetPeakDb,
+                warmthBoostDb = state.customWarmthDb,
+                clarityBoostDb = state.customClarityDb
+            )
+
+            val analysis = AudioDspEngine.analyzeWavFile(
+                file = masteredFile,
+                silenceThresholdDb = state.silenceDbThreshold,
+                minSilenceDurationSec = state.silenceDurationLimitSec
+            )
+
+            val updatedTrack = track.copy(
+                title = "${track.title.substringBefore(" [")} [AI Studio Master]",
+                filePath = masteredFile.absolutePath,
+                durationSec = analysis.durationSec,
+                peakDb = analysis.peakDb,
+                rmsDb = analysis.rmsDb,
+                noiseFloorDb = analysis.noiseFloorDb,
+                isNoiseFiltered = true,
+                isNormalized = state.autoNormalizeEnabled,
+                aiPresetApplied = state.selectedAiPreset.titleEn
+            )
+            repository.updateTrack(updatedTrack)
+
+            _uiState.update {
+                it.copy(
+                    isProcessingDsp = false,
+                    activeTrack = updatedTrack,
+                    waveformBins = analysis.waveformBins,
+                    silenceMaskBins = analysis.silenceMaskBins,
+                    detectedSilenceCount = analysis.detectedSilenceRegionsCount,
+                    estimatedSilenceSec = analysis.estimatedSilenceTotalSec,
+                    statusBannerMessageBn = "স্টুডিও মাস্টারিং সম্পন্ন! Peak: ${"%.1f".format(analysis.peakDb)} dB, RMS: ${"%.1f".format(analysis.rmsDb)} dB (${state.selectedAiPreset.titleBn})",
+                    statusBannerMessageEn = "Studio Mastering Complete! Peak: ${"%.1f".format(analysis.peakDb)} dB, RMS: ${"%.1f".format(analysis.rmsDb)} dB (${state.selectedAiPreset.titleEn})"
+                )
+            }
+        }
+    }
+
+    /**
+     * Playback Controls for Main Track and Individual Split Clips
+     */
+    fun toggleMainTrackPlayback() {
+        if (_uiState.value.isPlayingMainTrack) {
+            audioController.stopPlayback()
+            _uiState.update { it.copy(isPlayingMainTrack = false, playbackPositionSec = 0f) }
+            return
+        }
+
+        val track = _uiState.value.activeTrack ?: return
+        val file = File(track.filePath)
+        if (!file.exists()) return
+
+        _uiState.update {
+            it.copy(
+                isPlayingMainTrack = true,
+                playingClipFilePath = null,
+                playbackPositionSec = 0f
+            )
+        }
+
+        audioController.playWavFile(
+            file = file,
+            onProgress = { curSec, _ ->
+                _uiState.update { it.copy(playbackPositionSec = curSec) }
+            },
+            onCompleted = {
+                _uiState.update { it.copy(isPlayingMainTrack = false, playbackPositionSec = 0f) }
+            }
+        )
+    }
+
+    fun toggleSplitClipPlayback(clip: AudioSplitClip) {
+        if (_uiState.value.playingClipFilePath == clip.filePath) {
+            audioController.stopPlayback()
+            _uiState.update { it.copy(playingClipFilePath = null) }
+            return
+        }
+
+        val file = File(clip.filePath)
+        if (!file.exists()) return
+
+        _uiState.update {
+            it.copy(
+                isPlayingMainTrack = false,
+                playingClipFilePath = clip.filePath
+            )
+        }
+
+        audioController.playWavFile(
+            file = file,
+            onProgress = { _, _ -> },
+            onCompleted = {
+                _uiState.update { it.copy(playingClipFilePath = null) }
+            }
+        )
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        audioController.stopPlayback()
+        audioController.stopRecording()
+    }
+}

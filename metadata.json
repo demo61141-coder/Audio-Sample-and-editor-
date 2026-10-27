@@ -1,0 +1,10 @@
+{
+  "name": "SonicForge",
+  "description": "Smart Audio Recorder & Studio Editor with Audacity-style Noise Profile Learning, Silence Skip Recording, Dual-Mode Silence Removal, Flexible Multi-Range Audio Splitter, and AI-grade Speech Clarity & Auto-Normalization.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
